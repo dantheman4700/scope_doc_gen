@@ -58,6 +58,7 @@ cp .env.example .env
    - Email threads
    - Requirements documents
    - Any relevant project materials
+   - **(Optional but Recommended)** An `instructions.txt` file. This file can be used to provide specific instructions, context, or key details that you want the AI to pay close attention to. For example, you could specify the client's name, project goals, or any "out of scope" items. This helps guide the AI and improves the quality of the generated document.
 
 2. **Run the generator**:
 ```bash
