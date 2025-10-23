@@ -1,0 +1,209 @@
+{
+  "variables": [
+    {
+      "name": "client_name",
+      "type": "string",
+      "description": "Name of the client company or organization",
+      "style": "Plain text, title case"
+    },
+    {
+      "name": "project_name",
+      "type": "string",
+      "description": "Name or title of the automation project",
+      "style": "Plain text, title case"
+    },
+    {
+      "name": "project_summary",
+      "type": "string",
+      "description": "Two to three sentence summary of the project and its objectives",
+      "style": "Paragraph format, 2-3 sentences"
+    },
+    {
+      "name": "date_created",
+      "type": "date",
+      "description": "Date when the scope document was created",
+      "style": "Format: YYYY-MM-DD or Month DD, YYYY"
+    },
+    {
+      "name": "stakeholders",
+      "type": "array",
+      "description": "List of client representatives and internal team leads involved in the project",
+      "style": "Each item: 'Name - Position' (e.g., 'John Smith - CEO', 'Sarah Johnson - Operations Manager')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "process_mapping_description",
+      "type": "string",
+      "description": "Description of the current manual process or system being used",
+      "style": "Paragraph format, detailed explanation"
+    },
+    {
+      "name": "time_effort_cost",
+      "type": "string",
+      "description": "Time, effort, and cost currently involved in the manual process",
+      "style": "Paragraph or bullet format describing hours/month, costs, and effort"
+    },
+    {
+      "name": "pain_points",
+      "type": "array",
+      "description": "Key inefficiencies, bottlenecks, or challenges identified in the current process",
+      "style": "Each item: Brief description of a specific pain point (e.g., 'Manual data entry takes 10+ hours weekly', 'High error rate in calculations')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "existing_tools_systems",
+      "type": "array",
+      "description": "List of tools, software, or platforms currently used",
+      "style": "Each item: Tool/platform name with brief context (e.g., 'Salesforce CRM', 'Excel spreadsheets for tracking', 'Gmail for communication')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "automation_scope",
+      "type": "string",
+      "description": "Processes or workflows targeted for automation",
+      "style": "Paragraph describing what will be automated (e.g., 'FAQ chatbot, automated quote generation, data synchronization')"
+    },
+    {
+      "name": "high_level_workflow",
+      "type": "string",
+      "description": "Outline of the proposed workflow, ideally with visuals like flowcharts or process maps",
+      "style": "Step-by-step description or reference to diagram (e.g., 'See workflow diagram' or numbered steps)"
+    },
+    {
+      "name": "tech_stack",
+      "type": "array",
+      "description": "Tools and platforms involved in the automation solution",
+      "style": "Each item: Tool/platform name with purpose (e.g., 'Make.com - Workflow automation', 'OpenAI API - AI processing', 'Supabase - Database')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "data_sources",
+      "type": "array",
+      "description": "All inputs for the automation",
+      "style": "Each item: Source name/type (e.g., 'Client CRM database', 'Web forms', 'Email attachments', 'API endpoints')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "automation_outputs",
+      "type": "array",
+      "description": "What the automation delivers",
+      "style": "Each item: Output type/format (e.g., 'Automated email responses', 'Generated PDF reports', 'Dashboard updates', 'Slack notifications')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "integration_points",
+      "type": "array",
+      "description": "List of systems that require integration with the automation",
+      "style": "Each item: System name with integration method (e.g., 'Salesforce via REST API', 'Google Sheets via OAuth', 'Slack via Webhooks')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "security_considerations",
+      "type": "string",
+      "description": "Data protection and compliance requirements for the project",
+      "style": "Paragraph describing security measures, compliance standards (e.g., GDPR, SOC2), data handling"
+    },
+    {
+      "name": "scalability",
+      "type": "string",
+      "description": "Assessment of whether the automation can handle increased volumes or additional features",
+      "style": "Paragraph explaining scaling capabilities and limitations"
+    },
+    {
+      "name": "risks",
+      "type": "array",
+      "description": "Potential risks and challenges",
+      "style": "Each item: Risk description (e.g., 'API rate limits may affect processing speed', 'Third-party service downtime could disrupt workflow')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "assumptions_requirements",
+      "type": "array",
+      "description": "Key assumptions and requirements",
+      "style": "Each item: Assumption or requirement statement (e.g., 'Client provides API access within 1 week', 'Data is available in structured format')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "timeline_milestones",
+      "type": "string",
+      "description": "Phases with start and end dates",
+      "style": "Paragraph or list format with phase names and durations (e.g., 'Discovery: 1 week, Development: 3 weeks, Testing: 1 week')"
+    },
+    {
+      "name": "deliverable_checkpoints",
+      "type": "array",
+      "description": "Weekly deliverable checkpoints showing progress milestones",
+      "style": "Each item: 'Week X: Deliverable description' or 'Week X.X: Deliverable description' (e.g., 'Week 1: API integrations functional', 'Week 2.5: Basic scope generation working')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "approval_workflow",
+      "type": "string",
+      "description": "Process for approving the scope document",
+      "style": "Single sentence or short paragraph (e.g., 'Written confirmation via email suffices for approval of this plan.')"
+    },
+    {
+      "name": "dev_hours",
+      "type": "string",
+      "description": "Development hours with calculation",
+      "style": "Format: 'X-Y hours @ $Z/hour = $A - $B' (e.g., '20-40 hours @ $80/hour = $1,600 - $3,200')"
+    },
+    {
+      "name": "training_hours",
+      "type": "string",
+      "description": "User training/Communication hours",
+      "style": "Format: 'X hours' (e.g., '0 hours', '4 hours')"
+    },
+    {
+      "name": "pm_hours",
+      "type": "string",
+      "description": "Project Management hours",
+      "style": "Format: 'X hours' (e.g., '0 hours', '8 hours')"
+    },
+    {
+      "name": "subscription_licensing_costs",
+      "type": "array",
+      "description": "List of subscription and licensing costs for various tools/platforms",
+      "style": "Each item: 'Tool/Platform: Cost/period (notes)' (e.g., 'N8N: ~$20/month', 'AI API (Claude/GPT): ~$50/month (usage-dependent)', 'Google Workspace: Existing (no additional cost)')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "total_setup_cost",
+      "type": "string",
+      "description": "Total one-time setup cost",
+      "style": "Format: '$X - $Y' or '$X' (e.g., '$1,600 - $3,200', '$16,600')"
+    },
+    {
+      "name": "monthly_operating_cost",
+      "type": "string",
+      "description": "Total monthly operating cost for subscriptions",
+      "style": "Format: '~$X' or '$X' (e.g., '~$70', '$150')"
+    },
+    {
+      "name": "current_process_cost",
+      "type": "array",
+      "description": "Breakdown of current process costs including time spent, hourly rates, error correction costs, and total annual cost",
+      "style": "Each item: Cost component with calculation (e.g., 'Employee time: 60 hours/month × 12 months × $50/hour = $36,000/year', 'Error correction: ~$6,000/year', 'Total annual cost: $42,000-$60,000')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "automation_benefits",
+      "type": "array",
+      "description": "Breakdown of automation benefits including time savings, error reduction, response time improvements, and total annual savings",
+      "style": "Each item: Benefit with value (e.g., 'Time savings: $32,400-$48,600/year (90% reduction)', 'Error reduction: $5,400/year', 'Total annual savings: $42,800-$59,000')",
+      "markdown": "Bullet list with '* ' prefix"
+    },
+    {
+      "name": "roi_summary",
+      "type": "string",
+      "description": "Summary of ROI including percentage in first year and ongoing annual savings",
+      "style": "Format: 'X-Y% in first year, ongoing savings of $A-$B annually' (e.g., '231-404% in first year, ongoing savings of $42,800-$59,000 annually')"
+    },
+    {
+      "name": "appendices",
+      "type": "string",
+      "description": "Any additional documentation or references",
+      "style": "Paragraph or list with links/references (e.g., 'Meeting notes (link), API documentation: https://docs.example.com')"
+    }
+  ]
+}

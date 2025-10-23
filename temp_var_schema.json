@@ -1,0 +1,204 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tech Scope Document Variables",
+  "description": "Schema for variables used in technical scope document generation",
+  "type": "object",
+  "properties": {
+    "client_name": {
+      "type": "string",
+      "description": "Name of the client company or organization"
+    },
+    "project_name": {
+      "type": "string",
+      "description": "Name or title of the automation project"
+    },
+    "project_summary": {
+      "type": "string",
+      "description": "Two to three sentence summary of the project and its objectives"
+    },
+    "date_created": {
+      "type": "string",
+      "format": "date",
+      "description": "Date when the scope document was created (YYYY-MM-DD)"
+    },
+    "stakeholders": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^.+ - .+$"
+      },
+      "description": "List of stakeholders in format 'Name - Position'"
+    },
+    "process_mapping_description": {
+      "type": "string",
+      "description": "Description of the current manual process or system"
+    },
+    "time_effort_cost": {
+      "type": "string",
+      "description": "Time, effort, and cost currently involved in the manual process"
+    },
+    "pain_points": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Key inefficiencies, bottlenecks, or challenges"
+    },
+    "existing_tools_systems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of tools, software, or platforms currently used"
+    },
+    "automation_scope": {
+      "type": "string",
+      "description": "Processes or workflows targeted for automation"
+    },
+    "high_level_workflow": {
+      "type": "string",
+      "description": "Outline of the proposed workflow"
+    },
+    "tech_stack": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tools and platforms involved in the automation solution"
+    },
+    "data_sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "All inputs for the automation"
+    },
+    "automation_outputs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What the automation delivers"
+    },
+    "integration_points": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Systems that require integration"
+    },
+    "security_considerations": {
+      "type": "string",
+      "description": "Data protection and compliance requirements"
+    },
+    "scalability": {
+      "type": "string",
+      "description": "Assessment of scaling capabilities"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Potential risks and challenges"
+    },
+    "assumptions_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Key assumptions and requirements"
+    },
+    "timeline_milestones": {
+      "type": "string",
+      "description": "Phases with start and end dates"
+    },
+    "deliverable_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^Week [0-9]+(\\.[0-9]+)?: .+$"
+      },
+      "description": "Weekly deliverable checkpoints"
+    },
+    "approval_workflow": {
+      "type": "string",
+      "description": "Process for approving the scope document"
+    },
+    "dev_hours": {
+      "type": "string",
+      "description": "Development hours with calculation"
+    },
+    "training_hours": {
+      "type": "string",
+      "description": "User training/Communication hours"
+    },
+    "pm_hours": {
+      "type": "string",
+      "description": "Project Management hours"
+    },
+    "subscription_licensing_costs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of subscription and licensing costs"
+    },
+    "total_setup_cost": {
+      "type": "string",
+      "description": "Total one-time setup cost"
+    },
+    "monthly_operating_cost": {
+      "type": "string",
+      "description": "Total monthly operating cost"
+    },
+    "current_process_cost": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Breakdown of current process costs"
+    },
+    "automation_benefits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Breakdown of automation benefits"
+    },
+    "roi_summary": {
+      "type": "string",
+      "description": "Summary of ROI with percentage and savings"
+    },
+    "appendices": {
+      "type": "string",
+      "description": "Additional documentation or references"
+    }
+  },
+  "required": [
+    "client_name",
+    "project_name",
+    "project_summary",
+    "date_created",
+    "stakeholders",
+    "process_mapping_description",
+    "time_effort_cost",
+    "pain_points",
+    "existing_tools_systems",
+    "automation_scope",
+    "high_level_workflow",
+    "tech_stack",
+    "data_sources",
+    "automation_outputs",
+    "security_considerations",
+    "scalability",
+    "timeline_milestones",
+    "approval_workflow",
+    "dev_hours",
+    "training_hours",
+    "pm_hours",
+    "total_setup_cost",
+    "monthly_operating_cost",
+    "roi_summary"
+  ]
+}
