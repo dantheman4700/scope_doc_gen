@@ -38,4 +38,6 @@ ENV/
 output/
 generated_scopes/
 *.log
-
+misc_docs/
+input_docs/*
+!input_docs/README.txt
