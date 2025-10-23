@@ -1,2 +1,0 @@
-Project: Mortgage Automator API, Client: LynxBlue through Myzone
-There is a couple transcripts some with our myzone partner(mike) who we do work for, lynxblue is one of his client. I'm justin in the transcripts. The API docs are from the service we need to automate around.
