@@ -1,33 +1,22 @@
 """Document ingestion module for parsing various file formats."""
 
 from pathlib import Path
-from typing import List, Dict, Optional
-import base64
+from typing import List, Dict, Optional, Union
 import hashlib
-import io
 import mimetypes
 import re
 
 import PyPDF2
 
-try:
-    import fitz  # PyMuPDF
-except ImportError as exc:  # pragma: no cover - handled at runtime
-    fitz = None  # type: ignore
-
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover - handled at runtime
-    Image = None  # type: ignore
-
-try:
-    import pytesseract
-except ImportError:  # pragma: no cover - handled at runtime
-    pytesseract = None  # type: ignore
+from .config import OUTPUT_DIR
 
 
 MAX_NATIVE_PDF_BYTES = 32 * 1024 * 1024  # 32 MB
 MAX_NATIVE_PDF_PAGES = 100
+PDF_CHUNK_PAGE_LIMIT = 20
+PDF_CHUNK_OVERLAP = 2
+PDF_CHUNK_DIR = OUTPUT_DIR / "artifacts" / "pdf_chunks"
+PDF_CHUNK_DIR.mkdir(parents=True, exist_ok=True)
 SUPPORTED_IMAGE_FORMATS = {
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff'
 }
@@ -75,13 +64,18 @@ class DocumentIngester:
                 print(f"[WARN] Unsupported file format {suffix} for {file_path.name}")
                 continue
 
-            if document:
+            if not document:
+                continue
+
+            if isinstance(document, list):
+                documents.extend(document)
+            else:
                 documents.append(document)
-                print(f"[OK] Ingested: {file_path.name}")
+            print(f"[OK] Ingested: {file_path.name}")
         
         return documents
     
-    def ingest_file(self, file_path: Path) -> Optional[Dict[str, str]]:
+    def ingest_file(self, file_path: Path) -> Optional[Union[Dict[str, str], List[Dict[str, str]]]]:
         """
         Ingest a single file based on its format.
         
@@ -153,91 +147,123 @@ class DocumentIngester:
             'content_hash': self._hash_file(file_path),
         }
 
-    def _process_pdf(self, file_path: Path) -> Dict[str, str]:
-        """Process a PDF, choosing between native upload, text extraction, and OCR."""
+    def _process_pdf(self, file_path: Path) -> Union[Dict[str, str], List[Dict[str, str]]]:
+        """Process a PDF, choosing between native upload, text extraction, and page chunking."""
 
         size_bytes = file_path.stat().st_size
-        page_count = None
-        text_content = ""
         can_upload = size_bytes <= MAX_NATIVE_PDF_BYTES
 
         with open(file_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             page_count = len(pdf_reader.pages)
-            for page_num, page in enumerate(pdf_reader.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    text_content += f"--- Page {page_num + 1} ---\n{page_text}\n\n"
+            page_texts: List[str] = []
+            for page in pdf_reader.pages:
+                page_text = page.extract_text() or ""
+                page_texts.append(page_text.strip())
 
-        if page_count is not None and page_count > MAX_NATIVE_PDF_PAGES:
+        if page_count > MAX_NATIVE_PDF_PAGES:
             can_upload = False
 
-        upload_via = 'attachment' if can_upload else 'text'
+        combined_text = []
+        for idx, text in enumerate(page_texts, start=1):
+            if text:
+                combined_text.append(f"--- Page {idx} ---\n{text}")
 
-        text_content = text_content.strip()
+        text_content = "\n\n".join(combined_text).strip()
 
-        ocr_used = False
-        if not can_upload:
-            if not text_content:
-                text_content = self._ocr_pdf(file_path)
-                ocr_used = True
-        else:
+        if can_upload:
             if not text_content:
                 text_content = (
                     f"[PDF] {file_path.name} (page count: {page_count or 'unknown'}) provided via native upload."
                 )
 
-        if not text_content:
-            text_content = f"[PDF] {file_path.name}"
+            return {
+                'filename': file_path.name,
+                'content': text_content or f"[PDF] {file_path.name}",
+                'path': str(file_path),
+                'media_type': 'application/pdf',
+                'source_type': 'pdf',
+                'size_bytes': size_bytes,
+                'page_count': page_count or 0,
+                'upload_via': 'attachment',
+                'can_upload': True,
+                'content_hash': self._hash_file(file_path),
+            }
 
-        return {
-            'filename': file_path.name,
-            'content': text_content,
-            'path': str(file_path),
-            'media_type': 'application/pdf',
-            'source_type': 'pdf',
-            'size_bytes': size_bytes,
-            'page_count': page_count or 0,
-            'upload_via': 'attachment' if can_upload else ('ocr' if ocr_used else 'text'),
-            'can_upload': can_upload,
-            'content_hash': self._hash_file(file_path),
-        }
+        # Large PDF: rely on extracted text if available, otherwise split into chunks
+        if text_content:
+            return {
+                'filename': file_path.name,
+                'content': text_content,
+                'path': str(file_path),
+                'media_type': 'application/pdf',
+                'source_type': 'pdf',
+                'size_bytes': size_bytes,
+                'page_count': page_count or 0,
+                'upload_via': 'text',
+                'can_upload': False,
+                'content_hash': self._hash_file(file_path),
+            }
+
+        return self._split_pdf_into_chunks(file_path, page_texts)
+
+    def _split_pdf_into_chunks(self, file_path: Path, page_texts: List[str]) -> List[Dict[str, str]]:
+        chunks: List[Dict[str, str]] = []
+        chunk_index = 0
+        total_pages = len(page_texts)
+
+        while chunk_index < total_pages:
+            start = chunk_index
+            end = min(start + PDF_CHUNK_PAGE_LIMIT, total_pages)
+            pages = list(range(start, end))
+
+            # Include overlap from previous chunk
+            if chunk_index > 0 and PDF_CHUNK_OVERLAP > 0:
+                overlap_start = max(0, start - PDF_CHUNK_OVERLAP)
+                previous_pages = list(range(overlap_start, start))
+                pages = previous_pages + pages
+
+            chunk_texts = []
+            for page_idx in pages:
+                page_number = page_idx + 1
+                text = page_texts[page_idx]
+                if text:
+                    chunk_texts.append(f"--- Page {page_number} ---\n{text}")
+
+            # Skip empty chunks (e.g., blank pages)
+            if not chunk_texts:
+                chunk_index += PDF_CHUNK_PAGE_LIMIT
+                continue
+
+            chunk_body = "\n\n".join(chunk_texts)
+            chunk_filename = f"{file_path.stem}_chunk_{start+1:04d}_{min(end, total_pages):04d}.pdf.txt"
+            chunk_path = PDF_CHUNK_DIR / chunk_filename
+            with open(chunk_path, 'w', encoding='utf-8') as f:
+                f.write(chunk_body)
+
+            chunks.append({
+                'filename': chunk_filename,
+                'content': chunk_body,
+                'path': str(chunk_path),
+                'media_type': 'application/pdf',
+                'source_type': 'pdf_chunk',
+                'size_bytes': len(chunk_body.encode('utf-8', errors='ignore')),
+                'page_count': len(pages),
+                'upload_via': 'chunk',
+                'can_upload': False,
+                'content_hash': self._hash_text(chunk_body),
+                'parent_file': file_path.name,
+                'page_range': {'start': pages[0] + 1, 'end': pages[-1] + 1},
+            })
+
+            chunk_index += PDF_CHUNK_PAGE_LIMIT
+
+        return chunks
     
     def _read_text(self, file_path: Path) -> str:
         """Read plain text or markdown file."""
         with open(file_path, 'r', encoding='utf-8') as file:
             return file.read()
-
-    def _ocr_pdf(self, file_path: Path) -> str:
-        """Run OCR on a PDF using PyMuPDF for rendering and pytesseract for text extraction."""
-
-        if fitz is None or pytesseract is None or Image is None:
-            print("[WARN] OCR requested but PyMuPDF/Pillow/pytesseract not available")
-            return ""
-
-        try:
-            doc = fitz.open(file_path)
-        except Exception as exc:
-            print(f"[WARN] Could not open PDF for OCR ({file_path.name}): {exc}")
-            return ""
-
-        ocr_text_parts: List[str] = []
-
-        for page_index, page in enumerate(doc, start=1):
-            try:
-                pix = page.get_pixmap(dpi=200)
-                img_bytes = pix.tobytes("png")
-                image = Image.open(io.BytesIO(img_bytes))
-                text = pytesseract.image_to_string(image)
-                text = text.strip()
-                if text:
-                    ocr_text_parts.append(f"--- OCR Page {page_index} ---\n{text}")
-            except Exception as exc:
-                print(f"[WARN] OCR failed on page {page_index} of {file_path.name}: {exc}")
-
-        doc.close()
-
-        return "\n\n".join(ocr_text_parts)
 
     def _hash_text(self, text: str) -> str:
         hasher = hashlib.sha256()
