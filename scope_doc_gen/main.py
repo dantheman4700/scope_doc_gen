@@ -1,9 +1,10 @@
 """Main orchestration script for scope document generation."""
 
+import base64
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 from .config import (
     TEMPLATE_PATH,
@@ -152,11 +153,34 @@ class ScopeDocGenerator:
             return None
         
         print(f"\n[OK] Found {len(documents)} document(s)")
+
+        instructions_doc = None
+        analysis_docs: list[dict] = []
         for d in documents:
-            print(f"   - {d['filename']} ({len(d['content'])} chars)")
+            if d['filename'].lower() == 'instructions.txt':
+                instructions_doc = d
+                continue
+            analysis_docs.append(d)
+
+        for d in analysis_docs:
+            size_info = d.get('size_bytes')
+            meta_parts = []
+            if size_info is not None:
+                meta_parts.append(f"{size_info} bytes")
+            if d.get('source_type'):
+                meta_parts.append(d['source_type'])
+            if d.get('upload_via'):
+                meta_parts.append(f"via {d['upload_via']}")
+            if d.get('page_count'):
+                meta_parts.append(f"{d['page_count']} pages")
+            print(f"   - {d['filename']} ({', '.join(meta_parts)})")
+
+        if instructions_doc:
+            print("   - instructions.txt (used for guidance only; excluded from summarization)")
         
         # Step 2: Combine documents
-        combined = self.ingester.combine_documents(documents)
+        combined = self.ingester.combine_documents(analysis_docs)
+        attachments = self._collect_attachments(analysis_docs)
         
         # Load optional per-file context notes
         file_context = None
@@ -221,12 +245,11 @@ class ScopeDocGenerator:
             project_focus_hint = file_context["PROJECT_FOCUS"]
 
         summaries = []
-        for d in documents:
+        for d in analysis_docs:
             fname = d['filename']
             note = file_notes.get(fname)
-            fs = self.summarizer.summarize_file(
-                filename=fname,
-                content=d['content'],
+            fs = self.summarizer.summarize_document(
+                document=d,
                 project_focus=project_focus_hint,
                 file_note=note,
             )
@@ -249,14 +272,20 @@ class ScopeDocGenerator:
         print("="*80)
         
         # Build compact extraction input: instructions + context_pack + top-K evidence quotes per file
-        compact_input = self._build_compact_input(documents, context_pack, max_quotes_per_file=5)
+        compact_input = self._build_compact_input(
+            analysis_docs,
+            context_pack,
+            max_quotes_per_file=5,
+            instructions_doc=instructions_doc,
+        )
 
         if getattr(self, 'debug', False):
             variables, raw = self.extractor.extract_variables_with_raw(
                 compact_input,
                 self.variables_schema,
                 self.variables_guide,
-                file_context=file_context
+                file_context=file_context,
+                attachments=attachments,
             )
             # Persist raw model output for debugging
             debug_raw_path = self.output_dir / "claude_raw_output.json"
@@ -271,7 +300,8 @@ class ScopeDocGenerator:
                 compact_input,
                 self.variables_schema,
                 self.variables_guide,
-                file_context=file_context
+                file_context=file_context,
+                attachments=attachments,
             )
         
         # Save intermediate results
@@ -373,7 +403,13 @@ class ScopeDocGenerator:
         print(f"[OK] Document saved to: {output_path}")
         return str(output_path)
 
-    def _build_compact_input(self, documents, context_pack: dict, max_quotes_per_file: int = 5) -> str:
+    def _build_compact_input(
+        self,
+        documents,
+        context_pack: dict,
+        max_quotes_per_file: int = 5,
+        instructions_doc: dict | None = None,
+    ) -> str:
         """Construct a compact input payload for extraction.
 
         Includes instructions.txt content if present, the aggregated context pack,
@@ -382,9 +418,8 @@ class ScopeDocGenerator:
         parts = []
 
         # Include instructions.txt raw content verbatim if present
-        instr = next((d for d in documents if d['filename'].lower() == 'instructions.txt'), None)
-        if instr:
-            parts.append("INSTRUCTIONS.TXT:\n" + instr['content'].strip())
+        if instructions_doc:
+            parts.append("INSTRUCTIONS.TXT:\n" + instructions_doc['content'].strip())
 
         # Include compact context pack
         parts.append("CONTEXT_PACK:\n" + json.dumps(context_pack, indent=2))
@@ -405,6 +440,38 @@ class ScopeDocGenerator:
                 parts.append(f"  * \"{quote}\" (why: {rationale}; where: {approx})")
 
         return "\n\n".join(parts)
+
+    def _collect_attachments(self, documents: List[Dict]) -> List[Dict[str, str]]:
+        attachments: List[Dict[str, str]] = []
+
+        for doc in documents:
+            if not doc.get('can_upload') or doc.get('upload_via') != 'attachment':
+                continue
+
+            path = doc.get('path')
+            if not path:
+                continue
+
+            media_type = doc.get('media_type', 'application/octet-stream')
+            attachment_type = 'document'
+            if media_type.startswith('image/'):
+                attachment_type = 'image'
+
+            try:
+                with open(path, 'rb') as f:
+                    data_b64 = base64.standard_b64encode(f.read()).decode('utf-8')
+                attachments.append({
+                    'type': attachment_type,
+                    'source': {
+                        'type': 'base64',
+                        'media_type': media_type,
+                        'data': data_b64,
+                    }
+                })
+            except Exception as exc:
+                print(f"[WARN] Could not prepare attachment for {doc.get('filename')}: {exc}")
+
+        return attachments
 
 
 def main():

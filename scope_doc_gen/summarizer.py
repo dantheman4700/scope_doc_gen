@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -40,7 +41,38 @@ class FileSummarizer:
         project_focus: Optional[str] = None,
         file_note: Optional[str] = None,
     ) -> FileSummary:
-        cache_key = self._make_cache_key(filename, content, project_focus, file_note)
+        doc_stub = {
+            "filename": filename,
+            "content": content,
+            "path": None,
+            "media_type": "text/plain",
+            "source_type": "text",
+            "size_bytes": len(content.encode("utf-8", errors="ignore")),
+            "upload_via": "text",
+            "can_upload": False,
+            "content_hash": self._hash_text(content),
+        }
+        return self.summarize_document(
+            document=doc_stub,
+            project_focus=project_focus,
+            file_note=file_note,
+        )
+
+    def summarize_document(
+        self,
+        document: Dict[str, Any],
+        project_focus: Optional[str] = None,
+        file_note: Optional[str] = None,
+    ) -> FileSummary:
+        filename = document.get("filename", "unknown")
+        content = document.get("content", "")
+        cache_key = self._make_cache_key(
+            filename,
+            content,
+            project_focus,
+            file_note,
+            document.get("content_hash"),
+        )
         cache_path = self.cache_root / f"{self._sanitize_name(filename)}.{cache_key}.json"
         if cache_path.exists():
             try:
@@ -50,7 +82,8 @@ class FileSummarizer:
             except Exception:
                 pass
 
-        prompt = self._build_prompt(filename, content, project_focus, file_note)
+        prompt = self._build_prompt(document, project_focus, file_note)
+        message_content = self._build_message_content(document, prompt)
 
         # Exponential backoff for rate limits/errors
         attempt = 0
@@ -61,7 +94,7 @@ class FileSummarizer:
                     max_tokens=min(4000, MAX_TOKENS),
                     temperature=max(0.1, TEMPERATURE),
                     system=self._system_instructions(),
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": message_content}],
                 )
                 text = response.content[0].text
                 summary = self._parse_json(text)
@@ -93,11 +126,12 @@ class FileSummarizer:
 
     def _build_prompt(
         self,
-        filename: str,
-        content: str,
+        document: Dict[str, Any],
         project_focus: Optional[str],
         file_note: Optional[str],
     ) -> str:
+        filename = document.get("filename", "unknown")
+        content = document.get("content", "")
         schema = {
             "filename": "string",
             "purpose": "string",
@@ -122,6 +156,18 @@ class FileSummarizer:
         header.append(f"SOURCE FILE: {filename}")
         if file_note:
             header.append(f"FILE NOTE: {file_note}")
+        upload_via = document.get("upload_via")
+        source_type = document.get("source_type")
+        if upload_via and source_type:
+            header.append(f"SOURCE TYPE: {source_type}; INGEST METHOD: {upload_via}")
+        if document.get("page_count"):
+            header.append(f"PAGE COUNT: {document['page_count']}")
+        if document.get("can_upload") and upload_via == 'attachment':
+            header.append("NOTE: Original file provided via native upload in this message.")
+        elif upload_via == 'ocr':
+            header.append("NOTE: Content obtained via OCR from the original file.")
+        elif upload_via == 'skipped':
+            header.append("WARNING: File exceeded upload limits; only placeholder content available.")
 
         return (
             "\n".join(header)
@@ -133,6 +179,41 @@ class FileSummarizer:
             + "\n\nCONTENT:\n"
             + content
         )
+
+    def _build_message_content(self, document: Dict[str, Any], prompt: str) -> List[Dict[str, Any]]:
+        blocks: List[Dict[str, Any]] = []
+
+        if document.get("can_upload") and document.get("upload_via") == 'attachment':
+            path = document.get("path")
+            media_type = document.get("media_type", "application/octet-stream")
+            if path:
+                try:
+                    data_b64 = self._encode_base64(Path(path))
+                    attachment_type = 'document'
+                    if media_type.startswith('image/'):
+                        attachment_type = 'image'
+                    blocks.append({
+                        "type": attachment_type,
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": data_b64,
+                        },
+                    })
+                except Exception as exc:
+                    print(f"[WARN] Could not attach file {document.get('filename')}: {exc}")
+
+        blocks.append({"type": "text", "text": prompt})
+        return blocks
+
+    def _encode_base64(self, path: Path) -> str:
+        with open(path, 'rb') as f:
+            return base64.standard_b64encode(f.read()).decode('utf-8')
+
+    def _hash_text(self, text: str) -> str:
+        hasher = hashlib.sha256()
+        hasher.update(text.encode('utf-8', errors='ignore'))
+        return hasher.hexdigest()
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         t = text.strip()
@@ -166,7 +247,12 @@ class FileSummarizer:
         }
 
     def _make_cache_key(
-        self, filename: str, content: str, project_focus: Optional[str], file_note: Optional[str]
+        self,
+        filename: str,
+        content: str,
+        project_focus: Optional[str],
+        file_note: Optional[str],
+        content_hash: Optional[str] = None,
     ) -> str:
         h = hashlib.sha256()
         h.update(filename.encode('utf-8', errors='ignore'))
@@ -175,6 +261,8 @@ class FileSummarizer:
             h.update(project_focus.encode('utf-8', errors='ignore'))
         if file_note:
             h.update(file_note.encode('utf-8', errors='ignore'))
+        if content_hash:
+            h.update(content_hash.encode('utf-8', errors='ignore'))
         return h.hexdigest()[:16]
 
     def _sanitize_name(self, name: str) -> str:

@@ -57,7 +57,9 @@ cp .env.example .env
    - Meeting transcripts
    - Email threads
    - Requirements documents
-   - Any relevant project materials
+- Any relevant project materials
+- Images (PNG, JPG, TIFF, WebP). These are uploaded directly so Claude can inspect them, while summaries log a placeholder.
+- PDFs. Files up to 32 MB and 100 pages are uploaded natively; larger or scanned files fall back to text extraction and OCR.
    - **(Optional but Recommended)** An `instructions.txt` file. This file can be used to provide specific instructions, context, or key details that you want the AI to pay close attention to. For example, you could specify the client's name, project goals, or any "out of scope" items. This helps guide the AI and improves the quality of the generated document.
 
 2. **Run the generator**:
@@ -66,6 +68,7 @@ python -m scope_doc_gen.main
 ```
 
 3. **Find your generated document** in `generated_scopes/`
+4. **Check the console log**. For each input, the generator notes whether it was uploaded natively, extracted as text, or processed via OCR.
 
 ### Advanced Usage
 
@@ -104,6 +107,12 @@ scope_doc_gen/
 ├── .env.example            # Example environment file
 └── README.md              # This file
 ```
+
+## Dependencies
+
+- Python 3.10+
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed and on your PATH (required for OCR of scanned PDFs/images)
+- The packages listed in `requirements.txt` (install with `pip install -r requirements.txt`)
 
 ## How It Works
 
@@ -172,8 +181,8 @@ Edit `scope_doc_gen/config.py` to customize:
 - Verify files have supported extensions (.pdf, .txt, .md)
 
 ### PDF extraction issues
-- Some PDFs may have text as images (OCR needed)
-- Try converting PDF to text first using online tools
+- The generator will try to upload PDFs up to 32 MB / 100 pages directly to Claude. Larger files fall back to text extraction and, if that yields little text, OCR.
+- If OCR output looks garbled, ensure [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) is installed and accessible from your PATH. You can also pre-convert PDFs to text using external tools.
 
 ### Generated document has "TBD" fields
 - Input documents may not contain all required information

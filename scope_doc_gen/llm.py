@@ -3,7 +3,8 @@
 import json
 import time
 import sys
-from typing import Dict, Any, List, Tuple
+import base64
+from typing import Dict, Any, List, Tuple, Optional
 from anthropic import Anthropic
 from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_TOKENS, TEMPERATURE
 
@@ -25,7 +26,8 @@ class ClaudeExtractor:
         combined_documents: str,
         variables_schema: Dict[str, Any],
         variables_guide: Dict[str, Any],
-        file_context: Dict[str, str] | None = None
+        file_context: Optional[Dict[str, str]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Extract all variables from documents using Claude.
@@ -44,7 +46,12 @@ class ClaudeExtractor:
         system_prompt = self._build_system_prompt(variables_schema, variables_guide)
         
         # Build the user message
-        user_message = self._build_extraction_prompt(combined_documents, file_context)
+        message_content = self._build_message_content(
+            combined_documents,
+            file_context,
+            attachments,
+            include_debug_note=False,
+        )
         
         attempt = 0
         while True:
@@ -55,7 +62,7 @@ class ClaudeExtractor:
                     temperature=TEMPERATURE,
                     system=system_prompt,
                     messages=[
-                        {"role": "user", "content": user_message}
+                        {"role": "user", "content": message_content}
                     ]
                 )
                 response_text = response.content[0].text
@@ -82,7 +89,8 @@ class ClaudeExtractor:
         combined_documents: str,
         variables_schema: Dict[str, Any],
         variables_guide: Dict[str, Any],
-        file_context: Dict[str, str] | None = None
+        file_context: Optional[Dict[str, str]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, Any], str]:
         """
         Same as extract_variables, but also returns the raw model text for debugging.
@@ -91,7 +99,12 @@ class ClaudeExtractor:
         print("\n[INFO] Analyzing documents with Claude (debug mode)...")
 
         system_prompt = self._build_system_prompt(variables_schema, variables_guide)
-        user_message = self._build_extraction_prompt(combined_documents, file_context)
+        message_content = self._build_message_content(
+            combined_documents,
+            file_context,
+            attachments,
+            include_debug_note=True,
+        )
 
         attempt = 0
         while True:
@@ -102,7 +115,7 @@ class ClaudeExtractor:
                     temperature=TEMPERATURE,
                     system=system_prompt,
                     messages=[
-                        {"role": "user", "content": user_message + "\n\nReturn ONLY a valid JSON object with no extra text."}
+                        {"role": "user", "content": message_content}
                     ]
                 )
                 response_text = response.content[0].text
@@ -219,8 +232,19 @@ INSTRUCTIONS:
 
 Your response should be ONLY a JSON object with the extracted variables. Do not include any explanations or additional text."""
     
-    def _build_extraction_prompt(self, combined_documents: str, file_context: Dict[str, str] | None = None) -> str:
-        """Build the user message prompt, optionally including per-file context notes."""
+    def _build_message_content(
+        self,
+        combined_documents: str,
+        file_context: Optional[Dict[str, str]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        include_debug_note: bool = False,
+    ) -> List[Dict[str, Any]]:
+        blocks: List[Dict[str, Any]] = []
+
+        if attachments:
+            for attachment in attachments:
+                blocks.append(attachment)
+
         context_section = ""
         if file_context:
             lines = ["FILE CONTEXT (per source document):"]
@@ -228,12 +252,18 @@ Your response should be ONLY a JSON object with the extracted variables. Do not 
                 lines.append(f"- {fname}: {note}")
             context_section = "\n" + "\n".join(lines) + "\n"
 
-        return (
+        prompt = (
             (context_section if context_section else "")
             + "\nHere are the documents to analyze:\n\n"
             + combined_documents
-            + "\n\nPlease extract all variables from these documents according to the schema and style guide provided in the system prompt. Return the results as a JSON object."
+            + "\n\nPlease extract all variables from these documents according to the schema and style guide provided in the system prompt."
         )
+
+        if include_debug_note:
+            prompt += "\n\nReturn ONLY a valid JSON object with no extra text."
+
+        blocks.append({"type": "text", "text": prompt})
+        return blocks
 
     # ---------- Project Filtering ----------
     def filter_for_project(
