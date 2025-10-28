@@ -15,6 +15,16 @@ VARIABLES_GUIDE_PATH = PROJECT_ROOT / "variables.json"
 INPUT_DOCS_DIR = PROJECT_ROOT / "input_docs"
 OUTPUT_DIR = PROJECT_ROOT / "generated_scopes"
 
+# Historical scope retrieval (optional)
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+HISTORY_ENABLED = _env_flag("HISTORY_ENABLED")
+HISTORY_DB_URL = os.getenv("HISTORY_DB_URL")
+HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "text-embedding-3-small")
+HISTORY_TOPN = int(os.getenv("HISTORY_TOPN", "12"))
+
 # API Configuration
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = "claude-sonnet-4-5"  # Sonnet 4.5 per user preference

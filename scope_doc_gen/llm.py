@@ -230,6 +230,9 @@ INSTRUCTIONS:
 6. Ensure all required fields have values
 7. Return the results as a valid JSON object
 
+ASSUMPTIONS:
+1. The development labor rate is fixed at $200/hour. When interpreting or calculating development-related costs, use $200/hr unless explicit, contradictory pricing is stated in the documents.
+
 Your response should be ONLY a JSON object with the extracted variables. Do not include any explanations or additional text."""
     
     def _build_message_content(

@@ -11,19 +11,24 @@ from .config import (
     VARIABLES_SCHEMA_PATH,
     VARIABLES_GUIDE_PATH,
     INPUT_DOCS_DIR,
-    OUTPUT_DIR
+    OUTPUT_DIR,
+    HISTORY_ENABLED,
+    HISTORY_DB_URL,
+    HISTORY_EMBEDDING_MODEL,
+    HISTORY_TOPN,
 )
 from .ingest import DocumentIngester
 from .llm import ClaudeExtractor
 from .renderer import TemplateRenderer
 from .summarizer import FileSummarizer
 from .aggregate import aggregate_summaries
+from .history_retrieval import HistoryRetriever
 
 
 class ScopeDocGenerator:
     """Main orchestrator for scope document generation."""
     
-    def __init__(self, input_dir: Optional[Path] = None, output_dir: Optional[Path] = None):
+    def __init__(self, input_dir: Optional[Path] = None, output_dir: Optional[Path] = None, history_retriever: HistoryRetriever | None = None):
         """
         Initialize the generator.
         
@@ -39,6 +44,7 @@ class ScopeDocGenerator:
         self.extractor = ClaudeExtractor()
         self.renderer = TemplateRenderer(TEMPLATE_PATH)
         self.summarizer = FileSummarizer(self.extractor)
+        self.history_retriever = history_retriever
         
         # Load schemas
         self.variables_schema = self._load_json(VARIABLES_SCHEMA_PATH)
@@ -53,11 +59,11 @@ class ScopeDocGenerator:
         """Load casual instructions from input_dir/instructions.txt, if present.
 
         Expected format (free-form, forgiving):
-            Client: LynxBlue
-            Project: Mortgage Automator API
+            Client: Example Client
+            Project: Example Solution Build
             notes:
-              meeting_transcript.txt: Kickoff call notes
-              Mortgage Automator Lender API Documentation.pdf: Vendor API docs
+              kickoff_meeting_transcript.txt: Kickoff call notes
+              product_api_documentation.pdf: Vendor API docs
 
         Returns:
             (project_focus_string | None, file_context_dict | None)
@@ -272,11 +278,21 @@ class ScopeDocGenerator:
         print("="*80)
         
         # Build compact extraction input: instructions + context_pack + top-K evidence quotes per file
+        reference_block = None
+        if self.history_retriever:
+            try:
+                reference_block = self.history_retriever.fetch_reference_block(context_pack)
+                if reference_block:
+                    print("[OK] Loaded reference estimates from historical scopes")
+            except Exception as history_err:
+                print(f"[WARN] Failed to fetch historical references: {history_err}")
+
         compact_input = self._build_compact_input(
             analysis_docs,
             context_pack,
             max_quotes_per_file=5,
             instructions_doc=instructions_doc,
+            reference_block=reference_block,
         )
 
         if getattr(self, 'debug', False):
@@ -409,6 +425,7 @@ class ScopeDocGenerator:
         context_pack: dict,
         max_quotes_per_file: int = 5,
         instructions_doc: dict | None = None,
+        reference_block: str | None = None,
     ) -> str:
         """Construct a compact input payload for extraction.
 
@@ -416,6 +433,9 @@ class ScopeDocGenerator:
         and a limited number of evidence quotes per file to reduce token load.
         """
         parts = []
+
+        if reference_block:
+            parts.append(reference_block)
 
         # Include instructions.txt raw content verbatim if present
         if instructions_doc:
@@ -526,14 +546,62 @@ def main():
         action='store_true',
         help="Enable debug logging and save raw LLM output"
     )
+    parser.add_argument(
+        '--history-use',
+        action='store_true',
+        help="Enable historical scope retrieval for reference estimates"
+    )
+    parser.add_argument(
+        '--history-dsn',
+        type=str,
+        help="PostgreSQL DSN for historical scope storage"
+    )
+    parser.add_argument(
+        '--history-model',
+        type=str,
+        help="Embedding model for historical profiles"
+    )
+    parser.add_argument(
+        '--history-topn',
+        type=int,
+        help="Number of similar historical scopes to retrieve"
+    )
     
     args = parser.parse_args()
     
     try:
+        history_retriever = None
+        if args.history_use or HISTORY_ENABLED:
+            history_dsn = args.history_dsn or HISTORY_DB_URL
+            if history_dsn:
+                history_model = args.history_model or HISTORY_EMBEDDING_MODEL
+                history_topn = args.history_topn or HISTORY_TOPN
+                try:
+                    history_retriever = HistoryRetriever(
+                        dsn=history_dsn,
+                        model_name=history_model,
+                        top_n=history_topn,
+                        extractor=None,  # temporary, replaced after generator init
+                    )
+                    print("[OK] Historical retrieval enabled")
+                except Exception as err:
+                    print(f"[WARN] Could not initialize historical retrieval: {err}")
+            else:
+                print("[WARN] History retrieval requested but no DSN provided")
+
         generator = ScopeDocGenerator(
             input_dir=args.input_dir,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            history_retriever=history_retriever,
         )
+
+        # If history retriever exists, attach the live Claude extractor so it can build the query phrase via Claude
+        if history_retriever is not None:
+            try:
+                # generator.extractor is the live ClaudeExtractor
+                history_retriever.extractor = generator.extractor
+            except Exception:
+                pass
         # Attach debug flag to instance
         setattr(generator, 'debug', args.debug)
         

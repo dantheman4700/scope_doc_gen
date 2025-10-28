@@ -7,6 +7,7 @@ import mimetypes
 import re
 
 import PyPDF2
+from docx import Document
 
 from .config import OUTPUT_DIR
 
@@ -26,7 +27,7 @@ class DocumentIngester:
     """Handles reading and parsing of various document formats."""
 
     def __init__(self):
-        self.supported_formats = {'.pdf', '.txt', '.md', '.vtt'}
+        self.supported_formats = {'.pdf', '.txt', '.md', '.vtt', '.docx'}
         # Filenames to ignore in input directories (case-insensitive)
         self.ignored_filenames = {'readme.txt'}
     
@@ -116,6 +117,8 @@ class DocumentIngester:
                     'can_upload': False,
                     'content_hash': self._hash_text(content),
                 }
+            elif suffix == '.docx':
+                return self._process_docx(file_path)
             else:
                 print(f"[WARN] Unsupported file format {suffix}")
                 return None
@@ -259,6 +262,29 @@ class DocumentIngester:
             chunk_index += PDF_CHUNK_PAGE_LIMIT
 
         return chunks
+
+    def _process_docx(self, file_path: Path) -> Dict[str, str]:
+        doc = Document(file_path)
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        content = "\n".join(paragraphs)
+        media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        size_bytes = file_path.stat().st_size
+        can_upload = size_bytes <= MAX_NATIVE_PDF_BYTES
+
+        if not content:
+            content = f"[DOCX] {file_path.name}"
+
+        return {
+            'filename': file_path.name,
+            'content': content,
+            'path': str(file_path),
+            'media_type': media_type,
+            'source_type': 'docx',
+            'size_bytes': size_bytes,
+            'upload_via': 'attachment' if can_upload else 'text',
+            'can_upload': can_upload,
+            'content_hash': self._hash_file(file_path),
+        }
     
     def _read_text(self, file_path: Path) -> str:
         """Read plain text or markdown file."""

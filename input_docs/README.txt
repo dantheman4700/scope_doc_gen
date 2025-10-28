@@ -1,7 +1,7 @@
 [INFO] INPUT DOCUMENTS FOLDER
 ========================
 
-Place your source documents here for the scope generator to analyze.
+Place your source documents here for the scope generator to analyze. Place context for files and project/client name in instructions.txt.
 
 Supported formats:
 - PDF (.pdf)

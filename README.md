@@ -87,6 +87,34 @@ python -m scope_doc_gen.main --input-dir ./my_docs --output-dir ./my_output
 python -m scope_doc_gen.main --from-variables extracted_variables.json
 ```
 
+**Enable historical reference estimates** (optional):
+```bash
+python -m scope_doc_gen.main --history-use --history-dsn "postgresql://user:pass@localhost:5432/history"
+```
+
+### Historical reference workflow (optional)
+
+1. **Prepare Postgres with pgvector**
+   ```sql
+   CREATE DATABASE history;
+   \c history
+   CREATE EXTENSION vector;
+   ```
+
+2. **Import historical scopes** (PDF/MD/TXT) so estimates can be reused:
+   ```bash
+   python -m scope_doc_gen.history_import ./path/to/past_scopes \
+     --dsn "postgresql://user:pass@localhost:5432/history"
+   ```
+
+3. **Generate with references enabled**:
+   ```bash
+   python -m scope_doc_gen.main --history-use \
+     --history-dsn "postgresql://user:pass@localhost:5432/history"
+   ```
+
+The importer asks Claude to extract key estimation signals (hours, timeline, milestones, services). During generation, similar past projects are retrieved, summarized, and provided to the model as guidance.
+
 ## Project Structure
 
 ```
