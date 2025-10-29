@@ -16,7 +16,7 @@
       "name": "project_summary",
       "type": "string",
       "description": "Two to three sentence summary of the project and its objectives",
-      "style": "Paragraph format, 2-3 sentences"
+      "style": "Concise paragraph format, 2-3 sentences. Use **bold** for key technologies, metrics, and important outcomes."
     },
     {
       "name": "date_created",
@@ -35,13 +35,13 @@
       "name": "process_mapping_description",
       "type": "string",
       "description": "Description of the current manual process or system being used",
-      "style": "Paragraph format, detailed explanation"
+      "style": "Concise paragraph. Use **bold** for key steps, roles, tools, and time estimates. Avoid verbose explanations."
     },
     {
       "name": "time_effort_cost",
       "type": "string",
       "description": "Time, effort, and cost currently involved in the manual process",
-      "style": "Paragraph or bullet format describing hours/month, costs, and effort"
+      "style": "Concise description with **bold** for specific numbers (hours, costs, FTEs). Focus on quantifiable metrics."
     },
     {
       "name": "pain_points",
@@ -61,19 +61,19 @@
       "name": "automation_scope",
       "type": "string",
       "description": "Processes or workflows targeted for automation",
-      "style": "Paragraph describing what will be automated (e.g., 'FAQ chatbot, automated quote generation, data synchronization')"
+      "style": "Concise paragraph. Use **bold** for specific features, systems, and key capabilities. Focus on what's being automated and why."
     },
     {
       "name": "high_level_workflow",
       "type": "string",
-      "description": "Outline of the proposed workflow, ideally with visuals like flowcharts or process maps",
-      "style": "Step-by-step description or reference to diagram (e.g., 'See workflow diagram' or numbered steps)"
+      "description": "ASCII art diagram showing workflow with trigger, numbered steps, and substeps",
+      "style": "Create a text art diagram with:\n- Clear TRIGGER at the top\n- Numbered HIGH-LEVEL STEPS (1., 2., 3., etc.)\n- Indented substeps under each (a), b), c), etc.)\n- Use arrows (→, ↓) and simple boxes/lines\n- Keep it visual and easy to scan\n- Be concise - use brief phrases, not full sentences\nExample format:\n┌─────────────────────────┐\n│ TRIGGER: Event occurs   │\n└───────────┬─────────────┘\n            ↓\n    1. First major step\n       a) Substep detail\n       b) Another substep\n            ↓\n    2. Second major step\n       a) Substep here"
     },
     {
       "name": "tech_stack",
       "type": "array",
       "description": "Tools and platforms involved in the automation solution",
-      "style": "Each item: Tool/platform name with purpose (e.g., 'Make.com - Workflow automation', 'OpenAI API - AI processing', 'Supabase - Database')",
+      "style": "Each item: **Tool/platform name** - Brief purpose. Be concise. Format: '**Name** - Purpose'",
       "markdown": "Bullet list with '* ' prefix"
     },
     {
@@ -101,13 +101,13 @@
       "name": "security_considerations",
       "type": "string",
       "description": "Data protection and compliance requirements for the project",
-      "style": "Paragraph describing security measures, compliance standards (e.g., GDPR, SOC2), data handling"
+      "style": "Concise paragraph. Use **bold** for specific security measures, compliance standards (e.g., **GDPR**, **SOC2**), and key security features."
     },
     {
       "name": "scalability",
       "type": "string",
       "description": "Assessment of whether the automation can handle increased volumes or additional features",
-      "style": "Paragraph explaining scaling capabilities and limitations"
+      "style": "Concise paragraph. Use **bold** for specific limits, capacity numbers, and scaling thresholds. Focus on concrete capabilities."
     },
     {
       "name": "risks",
@@ -127,7 +127,7 @@
       "name": "timeline_milestones",
       "type": "string",
       "description": "Phases with start and end dates",
-      "style": "Paragraph or list format with phase names and durations (e.g., 'Discovery: 1 week, Development: 3 weeks, Testing: 1 week')"
+      "style": "Concise format with **bold** phase names and clear durations. Use sentence or list format."
     },
     {
       "name": "deliverable_checkpoints",
@@ -146,19 +146,19 @@
       "name": "dev_hours",
       "type": "string",
       "description": "Development hours with calculation",
-      "style": "Format: 'X-Y hours @ $Z/hour = $A - $B' (e.g., '20-40 hours @ $80/hour = $1,600 - $3,200')"
+      "style": "Format with breakdown: '**X hours** @ $Y/hour = **$Z** (Component 1: Xh, Component 2: Yh, etc.)'. Be specific about what tasks are included."
     },
     {
       "name": "training_hours",
       "type": "string",
       "description": "User training/Communication hours",
-      "style": "Format: 'X hours' (e.g., '0 hours', '4 hours')"
+      "style": "Format: '**X hours** @ $Y/hour = **$Z**' with brief context"
     },
     {
       "name": "pm_hours",
       "type": "string",
       "description": "Project Management hours",
-      "style": "Format: 'X hours' (e.g., '0 hours', '8 hours')"
+      "style": "Format: '**X hours** @ $Y/hour = **$Z**' with brief context"
     },
     {
       "name": "subscription_licensing_costs",
@@ -171,13 +171,13 @@
       "name": "total_setup_cost",
       "type": "string",
       "description": "Total one-time setup cost",
-      "style": "Format: '$X - $Y' or '$X' (e.g., '$1,600 - $3,200', '$16,600')"
+      "style": "Format: '**$X** (breakdown of components)' - Use bold for the total amount"
     },
     {
       "name": "monthly_operating_cost",
       "type": "string",
       "description": "Total monthly operating cost for subscriptions",
-      "style": "Format: '~$X' or '$X' (e.g., '~$70', '$150')"
+      "style": "Format: '**~$X** (~$A USD estimate)' - Use bold for the total amount"
     },
     {
       "name": "current_process_cost",
@@ -197,7 +197,7 @@
       "name": "roi_summary",
       "type": "string",
       "description": "Summary of ROI including percentage in first year and ongoing annual savings",
-      "style": "Format: 'X-Y% in first year, ongoing savings of $A-$B annually' (e.g., '231-404% in first year, ongoing savings of $42,800-$59,000 annually')"
+      "style": "Use **bold** for key numbers. Format: '**X%** ROI in first year with ongoing savings of **$Y** annually'. Be concise and impactful."
     },
     {
       "name": "appendices",

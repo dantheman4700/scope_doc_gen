@@ -84,6 +84,10 @@ class ClaudeExtractor:
                     ],
                     tools=self.tools or None,
                 )
+                
+                # Check for web search tool usage and print results
+                self._print_web_search_usage(response)
+                
                 response_text = response.content[0].text
                 variables = self._parse_response(response_text)
                 print("[OK] Variable extraction complete")
@@ -138,6 +142,10 @@ class ClaudeExtractor:
                     ],
                     tools=self.tools or None,
                 )
+                
+                # Check for web search tool usage and print results
+                self._print_web_search_usage(response)
+                
                 response_text = response.content[0].text
                 variables = self._parse_response(response_text)
                 print("[OK] Variable extraction complete")
@@ -417,6 +425,38 @@ INSTRUCTIONS:
             chunks = [raw[i:i + max_chars] for i in range(0, len(raw), max_chars)]
 
         return chunks
+    
+    def _print_web_search_usage(self, response: Any) -> None:
+        """Print web search results if the model used the web_search tool."""
+        if not hasattr(response, 'content'):
+            return
+        
+        search_count = 0
+        for block in response.content:
+            if hasattr(block, 'type') and block.type == 'tool_use':
+                if hasattr(block, 'name') and block.name == 'web_search':
+                    search_count += 1
+                    # Print the search query if available
+                    if hasattr(block, 'input') and isinstance(block.input, dict):
+                        query = block.input.get('query', 'N/A')
+                        print(f"\n[WEB SEARCH #{search_count}] Query: {query}")
+            
+            # Look for tool results in the response
+            if hasattr(block, 'type') and block.type == 'tool_result':
+                if hasattr(block, 'content'):
+                    try:
+                        # Claude returns web search results as structured data
+                        # Try to extract URLs from the result
+                        result_text = str(block.content)
+                        # Parse for URLs if available in the result
+                        import re
+                        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', result_text)
+                        if urls:
+                            print(f"[WEB SEARCH] Found {len(urls)} source(s):")
+                            for url in urls[:5]:  # Limit to first 5 to avoid spam
+                                print(f"  → {url}")
+                    except Exception:
+                        pass  # Silently skip if parsing fails
     
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """Parse Claude's response into a dictionary with robust fallbacks."""

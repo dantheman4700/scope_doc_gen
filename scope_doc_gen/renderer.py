@@ -74,6 +74,9 @@ class TemplateRenderer:
             return self._format_dict(value)
         
         if isinstance(value, str):
+            # Special handling for high_level_workflow: wrap in code block
+            if var_name == 'high_level_workflow':
+                return f"```\n{value.strip()}\n```"
             return value.strip()
         
         return str(value)
