@@ -6,7 +6,15 @@ import sys
 import base64
 from typing import Dict, Any, List, Tuple, Optional
 from anthropic import Anthropic
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_TOKENS, TEMPERATURE
+from .config import (
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    MAX_TOKENS,
+    TEMPERATURE,
+    ENABLE_WEB_RESEARCH,
+    WEB_SEARCH_MAX_USES,
+    WEB_SEARCH_ALLOWED_DOMAINS,
+)
 
 
 class ClaudeExtractor:
@@ -20,6 +28,16 @@ class ClaudeExtractor:
         
         self.client = Anthropic(api_key=self.api_key)
         self.model = CLAUDE_MODEL
+        self.tools: List[Dict[str, Any]] = []
+        if ENABLE_WEB_RESEARCH:
+            tool: Dict[str, Any] = {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": WEB_SEARCH_MAX_USES,
+            }
+            if WEB_SEARCH_ALLOWED_DOMAINS:
+                tool["allowed_domains"] = WEB_SEARCH_ALLOWED_DOMAINS
+            self.tools.append(tool)
     
     def extract_variables(
         self,
@@ -63,7 +81,8 @@ class ClaudeExtractor:
                     system=system_prompt,
                     messages=[
                         {"role": "user", "content": message_content}
-                    ]
+                    ],
+                    tools=self.tools or None,
                 )
                 response_text = response.content[0].text
                 variables = self._parse_response(response_text)
@@ -116,7 +135,8 @@ class ClaudeExtractor:
                     system=system_prompt,
                     messages=[
                         {"role": "user", "content": message_content}
-                    ]
+                    ],
+                    tools=self.tools or None,
                 )
                 response_text = response.content[0].text
                 variables = self._parse_response(response_text)

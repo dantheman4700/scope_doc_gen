@@ -25,6 +25,12 @@ HISTORY_DB_URL = os.getenv("HISTORY_DB_URL")
 HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "text-embedding-3-small")
 HISTORY_TOPN = int(os.getenv("HISTORY_TOPN", "12"))
 
+# Web research configuration
+ENABLE_WEB_RESEARCH = _env_flag("ENABLE_WEB_RESEARCH", "true")
+WEB_SEARCH_MAX_USES = int(os.getenv("WEB_SEARCH_MAX_USES", "3"))
+_allowed_domains = os.getenv("WEB_SEARCH_ALLOWED_DOMAINS")
+WEB_SEARCH_ALLOWED_DOMAINS = [d.strip() for d in _allowed_domains.split(",") if d.strip()] if _allowed_domains else None
+
 # API Configuration
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = "claude-sonnet-4-5"  # Sonnet 4.5 per user preference

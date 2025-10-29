@@ -8,6 +8,7 @@ import re
 
 import PyPDF2
 from docx import Document
+from openpyxl import load_workbook
 
 from .config import OUTPUT_DIR
 
@@ -27,7 +28,7 @@ class DocumentIngester:
     """Handles reading and parsing of various document formats."""
 
     def __init__(self):
-        self.supported_formats = {'.pdf', '.txt', '.md', '.vtt', '.docx'}
+        self.supported_formats = {'.pdf', '.txt', '.md', '.vtt', '.docx', '.xlsx'}
         # Filenames to ignore in input directories (case-insensitive)
         self.ignored_filenames = {'readme.txt'}
     
@@ -119,6 +120,8 @@ class DocumentIngester:
                 }
             elif suffix == '.docx':
                 return self._process_docx(file_path)
+            elif suffix == '.xlsx':
+                return self._process_xlsx(file_path)
             else:
                 print(f"[WARN] Unsupported file format {suffix}")
                 return None
@@ -283,6 +286,59 @@ class DocumentIngester:
             'size_bytes': size_bytes,
             'upload_via': 'attachment' if can_upload else 'text',
             'can_upload': can_upload,
+            'content_hash': self._hash_file(file_path),
+        }
+
+    def _process_xlsx(self, file_path: Path) -> Dict[str, str]:
+        """Extract a text summary from an Excel workbook (no native upload)."""
+        try:
+            wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
+        except Exception as exc:
+            print(f"[WARN] Could not open XLSX ({file_path.name}): {exc}")
+            return {
+                'filename': file_path.name,
+                'content': f"[XLSX] {file_path.name} (unreadable)",
+                'path': str(file_path),
+                'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'source_type': 'xlsx',
+                'size_bytes': file_path.stat().st_size,
+                'upload_via': 'text',
+                'can_upload': False,
+                'content_hash': self._hash_file(file_path),
+            }
+
+        lines: List[str] = []
+        sheet_limit = 10
+        row_limit = 200
+        col_limit = 20
+        try:
+            for si, sheet in enumerate(wb.worksheets[:sheet_limit], start=1):
+                lines.append(f"--- Sheet {si}: {sheet.title} ---")
+                rows = 0
+                for r in sheet.iter_rows(min_row=1, max_row=row_limit, max_col=col_limit, values_only=True):
+                    rows += 1
+                    vals = ["" if v is None else str(v) for v in r]
+                    lines.append("\t".join(vals))
+                if sheet.max_row > row_limit or sheet.max_column > col_limit:
+                    lines.append("[... truncated ...]")
+        except Exception as exc:
+            lines.append(f"[WARN] Error reading sheet data: {exc}")
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+        content = "\n".join(lines) if lines else f"[XLSX] {file_path.name} (empty)"
+        return {
+            'filename': file_path.name,
+            'content': content,
+            'path': str(file_path),
+            'media_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'source_type': 'xlsx',
+            'size_bytes': file_path.stat().st_size,
+            'upload_via': 'text',  # API does not accept XLSX as native document
+            'can_upload': False,
             'content_hash': self._hash_file(file_path),
         }
     

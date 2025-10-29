@@ -3,6 +3,7 @@
 import base64
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -133,7 +134,8 @@ class ScopeDocGenerator:
         interactive: bool = False,
         project_identifier: str = None,
         smart_ingest: bool = True,
-        context_notes_path: Optional[Path] = None
+        context_notes_path: Optional[Path] = None,
+        date_override: Optional[str] = None,
     ) -> str:
         """
         Generate a scope document from input documents.
@@ -319,6 +321,12 @@ class ScopeDocGenerator:
                 file_context=file_context,
                 attachments=attachments,
             )
+
+        # Force date_created to a known value (avoid LLM guessing)
+        try:
+            variables['date_created'] = date_override or datetime.now().date().isoformat()
+        except Exception:
+            pass
         
         # Save intermediate results
         if save_intermediate:
@@ -437,6 +445,14 @@ class ScopeDocGenerator:
         if reference_block:
             parts.append(reference_block)
 
+        parts.append(
+            "RESEARCH_GUIDANCE:\n"
+            "- Use the web_search tool when critical API, integration, compliance, or timeline details are missing or ambiguous.\n"
+            "- Prefer official vendor documentation, pricing pages, and reputable technical sources.\n"
+            "- Incorporate verified findings into estimates (timeline, effort, risks) and call out any assumptions resolved by research.\n"
+            "- In the final document, add an 'Appendix - External References' section with bullet points: Title – URL, summarizing the key insight from each researched source."
+        )
+
         # Include instructions.txt raw content verbatim if present
         if instructions_doc:
             parts.append("INSTRUCTIONS.TXT:\n" + instructions_doc['content'].strip())
@@ -547,6 +563,11 @@ def main():
         help="Enable debug logging and save raw LLM output"
     )
     parser.add_argument(
+        '--date',
+        type=str,
+        help="Override date_created (YYYY-MM-DD); defaults to today's date"
+    )
+    parser.add_argument(
         '--history-use',
         action='store_true',
         help="Enable historical scope retrieval for reference estimates"
@@ -614,6 +635,7 @@ def main():
                 project_identifier=args.project,
                 smart_ingest=not args.no_smart_ingest,
                 context_notes_path=args.context_file,
+                date_override=args.date,
             )
     
     except KeyboardInterrupt:
