@@ -1,0 +1,17 @@
+[Unit]
+Description=Scope Doc Frontend
+After=network.target
+
+[Service]
+User=scope
+WorkingDirectory=/opt/scope_doc_gen/frontend
+EnvironmentFile=/opt/scope_doc_gen/frontend/.env.local
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3300
+Restart=always
+RuntimeDirectory=scope-frontend
+RuntimeDirectoryMode=0755
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Scope Doc Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=scope
+WorkingDirectory=/opt/scope_doc_gen/server
+EnvironmentFile=/opt/scope_doc_gen/server/.env
+ExecStart=/opt/scope_doc_gen/venv/bin/uvicorn server.api:app --host 127.0.0.1 --port 8010 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

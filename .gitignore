@@ -27,12 +27,29 @@ ENV/
 
 # Environment variables
 .env
+.env.local
+.env.*.local
+frontend/.env.local
+server/.env
+
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # Project specific
 output/
@@ -41,3 +58,6 @@ generated_scopes/
 misc_docs/
 input_docs/*
 !input_docs/README.txt
+
+# Alembic
+alembic/versions/__pycache__/

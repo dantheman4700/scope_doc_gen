@@ -1,240 +1,111 @@
-# Scope Document Generator
+# Scope Doc Generator Platform
 
-AI-powered automation for generating technical scope documents from various input materials (PDFs, transcripts, emails, etc.).
+Web application for generating detailed project scope documents by combining local document ingestion, optional research, and a guided template workflow.
 
 ## Overview
 
-This tool uses Claude AI (Anthropic) to analyze your input documents and automatically generate professional technical scope documents. Simply drop your meeting notes, email threads, transcripts, or other project materials into a folder, and the system will extract all necessary information and generate a complete scope document.
+The legacy single-script tool has been reworked into a three-part system:
 
-## Features
+- **server/** (FastAPI) – authentication, project/run management, file uploads, vector search, background job orchestration, and storage.
+- **server/core/** – shared orchestration engine (summaries, template rendering, research integrations).
+- **frontend/** (Next.js + React) – dashboard for projects, runs, artifacts, and global search.
 
-- [OK] Multi-format ingestion: Supports PDF, TXT, Markdown, and VTT transcripts
-- [OK] AI-powered extraction: Uses Claude to intelligently extract and generate variables
-- [OK] Template-based generation: Consistent, professional output every time
-- 🔄 **Interactive refinement**: Optional mode to refine specific sections
-- 💾 **Intermediate saving**: Saves extracted variables for review and reuse
-- ⚡ **Fast processing**: Processes multiple documents in seconds
+Everything runs locally (PostgreSQL + pgvector, filesystem storage) and is intended for an internal deployment.
 
-## Installation
+## Key Features
 
-1. **Clone the repository**:
-```bash
-git clone <repository-url>
-cd scope_doc_gen
-```
+- Project-scoped storage (inputs, runs, outputs, cache, artifacts).
+- Run modes (`fast` reuse cached context, `full` regenerate summaries) with step tracking.
+- Toggleable research (`none`, Claude “quick” search, Perplexity “full” research).
+- Vector store indexing + similarity search for completed scopes.
+- Background job registry with persisted run state.
+- Cookie-based auth with Argon2 password hashing (single-user friendly).
 
-2. **Create a virtual environment** (recommended):
+## Prerequisites
+
+- Python 3.8+
+- Node.js 18+
+- PostgreSQL 15+ with the `vector` extension
+- `poetry` or `pip` (choose one workflow)
+
+## Backend Setup
+
 ```bash
 python -m venv venv
-
-# On Windows:
-venv\Scripts\activate
-
-# On macOS/Linux:
 source venv/bin/activate
-```
-
-3. **Install dependencies**:
-```bash
 pip install -r requirements.txt
-```
 
-4. **Set up your API key**:
-```bash
-# Copy the example env file
 cp .env.example .env
+# edit .env with:
+#   ANTHROPIC_API_KEY=
+#   PERPLEXITY_API_KEY=
+#   DATABASE_DSN=postgresql://user:pass@localhost:5432/scope
+#   SESSION_SECRET=<random string>
 
-# Edit .env and add your Anthropic API key
-# Get your API key from: https://console.anthropic.com/
+alembic upgrade head
+uvicorn server.api:app --reload
 ```
 
-## Quick Start
+The FastAPI app exposes REST endpoints at `http://localhost:8000`. See `frontend/lib/fetch.ts` for the expected base URL and routes.
 
-### Basic Usage
+## Frontend Setup
 
-1. **Add your input documents** to the `input_docs/` folder:
-   - PDFs of existing scope documents
-   - Meeting transcripts
-   - Email threads
-   - Requirements documents
-- Any relevant project materials
-- Images (PNG, JPG, TIFF, WebP). These are uploaded directly so Claude can inspect them, while summaries log a placeholder.
-- PDFs. Files up to 32 MB and 100 pages are uploaded natively. Larger files fall back to text extraction and, if no text is available, the PDF is split into overlapping page chunks so Claude can analyze each segment.
-   - **(Optional but Recommended)** An `instructions.txt` file. This file can be used to provide specific instructions, context, or key details that you want the AI to pay close attention to. For example, you could specify the client's name, project goals, or any "out of scope" items. This helps guide the AI and improves the quality of the generated document.
-
-2. **Run the generator**:
 ```bash
-python -m scope_doc_gen.main
+cd frontend
+npm install
+npm run dev
 ```
 
-3. **Find your generated document** in `generated_scopes/`
-4. **Check the console log**. For each input, the generator notes whether it was uploaded natively, extracted as text, or processed via OCR.
+Point your browser to `http://localhost:3000`. The app proxies API calls through Next.js route handlers (`frontend/app/api/*`).
 
-### Advanced Usage
-
-**Interactive mode** (refine variables before final generation):
-```bash
-python -m scope_doc_gen.main --interactive
-```
-
-**Custom directories**:
-```bash
-python -m scope_doc_gen.main --input-dir ./my_docs --output-dir ./my_output
-```
-
-**Generate from pre-extracted variables**:
-```bash
-python -m scope_doc_gen.main --from-variables extracted_variables.json
-```
-
-**Enable historical reference estimates** (optional):
-```bash
-python -m scope_doc_gen.main --history-use --history-dsn "postgresql://user:pass@localhost:5432/history"
-```
-
-### Historical reference workflow (optional)
-
-1. **Prepare Postgres with pgvector**
-   ```sql
-   CREATE DATABASE history;
-   \c history
-   CREATE EXTENSION vector;
-   ```
-
-2. **Import historical scopes** (PDF/MD/TXT) so estimates can be reused:
-   ```bash
-   python -m scope_doc_gen.history_import ./path/to/past_scopes \
-     --dsn "postgresql://user:pass@localhost:5432/history"
-   ```
-
-3. **Generate with references enabled**:
-   ```bash
-   python -m scope_doc_gen.main --history-use \
-     --history-dsn "postgresql://user:pass@localhost:5432/history"
-   ```
-
-The importer asks Claude to extract key estimation signals (hours, timeline, milestones, services). During generation, similar past projects are retrieved, summarized, and provided to the model as guidance.
-
-## Project Structure
+## Directory Layout
 
 ```
-scope_doc_gen/
-├── scope_doc_gen/          # Main package
-│   ├── __init__.py
-│   ├── config.py           # Configuration and paths
-│   ├── ingest.py           # Document ingestion
-│   ├── llm.py              # Claude AI integration
-│   ├── renderer.py         # Template rendering
-│   └── main.py             # Main orchestration
-├── input_docs/             # Put your input documents here
-├── generated_scopes/       # Generated documents go here
-├── template_scope.md       # Document template
-├── temp_var_schema.json    # JSON schema for variables
-├── variables.json          # Variable definitions and styles
-├── requirements.txt        # Python dependencies
-├── .env.example            # Example environment file
-└── README.md              # This file
+.
+├── server/
+│   ├── core/           # orchestration engine shared by API and jobs
+│   ├── routes/         # FastAPI routers (auth, projects, files, runs, search)
+│   ├── services/       # job runner, vector store
+│   ├── db/             # SQLAlchemy models and session helpers
+│   ├── storage/        # filesystem layout helpers
+│   ├── security/       # password & session utilities
+│   └── api.py          # FastAPI application factory
+├── frontend/           # Next.js dashboard
+├── alembic/            # database migrations
+├── template_scope.md   # markdown template rendered per run
+├── temp_var_schema.json
+├── variables.json
+├── requirements.txt
+└── README.md
 ```
 
-## Dependencies
-
-- Python 3.10+
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed and on your PATH (required for OCR of scanned PDFs/images)
-- The packages listed in `requirements.txt` (install with `pip install -r requirements.txt`)
-
-## How It Works
-
-1. **Document Ingestion**: Reads all documents from `input_docs/` and extracts text
-2. **AI Analysis**: Sends combined text to Claude with schema and style guidelines
-3. **Variable Extraction**: Claude analyzes content and extracts all required variables
-4. **Template Rendering**: Fills in the markdown template with extracted data
-5. **Output Generation**: Saves the complete scope document
-
-## Template Customization
-
-The template is defined in `template_scope.md`. You can customize:
-
-- Section structure
-- Variable placeholders (use `{{variable_name}}`)
-- Static content and headers
-
-The variables are defined in two files:
-
-- `temp_var_schema.json`: JSON Schema defining data types and validation
-- `variables.json`: Detailed style guide for each variable
-
-## Workflow Examples
-
-### Example 1: From Meeting Transcripts
-```
-input_docs/
-├── kickoff_meeting_transcript.txt
-├── requirements_discussion.pdf
-└── email_thread.txt
-
-→ Run generator → 
-
-generated_scopes/
-└── ClientName_ProjectName_TechScope_20250122_143022.md
-```
-
-### Example 2: Two-Stage Process
-```bash
-# Stage 1: Extract variables (review before rendering)
-python -m scope_doc_gen.main
-
-# Review/edit: generated_scopes/extracted_variables.json
-
-# Stage 2: Generate from edited variables
-python -m scope_doc_gen.main --from-variables generated_scopes/extracted_variables.json
-```
+All runtime data (uploads, cache, outputs) live under `data/` (configurable via `SCOPE_DATA_ROOT` in `.env`).
 
 ## Configuration
 
-Edit `scope_doc_gen/config.py` to customize:
+`server/core/config.py` centralizes environment-driven settings: API keys, session config, database DSN, data paths, research toggles, and rate-limit guidance. Update this file (or the `.env`) to customize defaults.
 
-- **Claude model**: Change `CLAUDE_MODEL` for different versions
-- **Temperature**: Adjust `TEMPERATURE` for more/less creative output
-- **Token limits**: Modify `MAX_TOKENS` for longer/shorter responses
-- **Paths**: Change default input/output directories
+Key variables:
 
-## Troubleshooting
+- `SCOPE_DATA_ROOT` – base directory for project data (defaults to `<repo>/data`).
+- `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY` – required for Claude/Perplexity features.
+- `DATABASE_DSN` – PostgreSQL connection string.
+- `SESSION_SECRET` – used to sign session cookies.
+- `HISTORY_ENABLED`, `HISTORY_DB_URL` – optional historical reference database.
 
-### "ANTHROPIC_API_KEY not found"
-- Make sure you've created `.env` file from `.env.example`
-- Add your API key: `ANTHROPIC_API_KEY=your_key_here`
+## Development Notes
 
-### "No documents found to process"
-- Check that documents are in `input_docs/` folder
-- Verify files have supported extensions (.pdf, .txt, .md)
+- Use `alembic revision --autogenerate -m "message"` to add schema changes; migrations stay at the repo root for ease-of-use with the Alembic CLI.
+- Background generation jobs run through `JobRegistry`; ensure the backend process stays running while runs are in progress.
+- Run artifacts (Markdown render, extracted variables, context pack, logs) are persisted to disk and recorded in the `artifacts` table.
+- Vector search is provided via the pgvector-backed `VectorStore`. Ensure `CREATE EXTENSION vector;` is enabled on the target database.
 
-### PDF extraction issues
-- The generator will upload PDFs up to 32 MB / 100 pages directly to Claude. Larger files fall back to text extraction and automatically split into overlapping page batches when native text is missing.
-- If you notice gaps in the extracted text for large PDFs, consider keeping the original file name consistent so the chunk artifacts are easier to correlate.
+## Deployment Checklist
 
-### Generated document has "TBD" fields
-- Input documents may not contain all required information
-- Use `--interactive` mode to manually fill in missing data
-- Or edit `extracted_variables.json` directly and regenerate
-
-## Roadmap
-
-- [ ] Add support for DOCX files
-- [ ] Implement OCR for image-based PDFs
-- [ ] Add web interface
-- [ ] Support for multiple templates
-- [ ] Email ingestion via IMAP
-- [ ] Variable validation and suggestions
-- [ ] Cost estimation calculator
-- [ ] Export to PDF format
-
-## Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+- Provision PostgreSQL (with `pgcrypto` and `vector`).
+- Configure environment variables (`.env`, systemd `EnvironmentFile`, etc.).
+- Run `alembic upgrade head` during deployment.
+- Optionally front the FastAPI + Next.js apps with Nginx and systemd services (see upcoming deployment docs).
 
 ## License
 
@@ -242,8 +113,5 @@ Contributions welcome! Please:
 
 ## Support
 
-For issues or questions:
-- Open an issue on GitHub
-- Check existing documentation
-- Review example scope documents in `misc_docs/`
+For questions or issues, open an issue or contact the project maintainer directly.
 
