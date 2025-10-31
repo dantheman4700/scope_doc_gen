@@ -51,17 +51,16 @@ class VectorStore:
 
         statements = [
             "CREATE EXTENSION IF NOT EXISTS vector",
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS scope_embeddings (
                 id UUID PRIMARY KEY,
                 project_id UUID,
                 doc_kind TEXT NOT NULL,
-                embedding vector(%d) NOT NULL,
+                embedding vector({self.embedding_dim}) NOT NULL,
                 metadata JSONB,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-            """
-            % self.embedding_dim,
+            """,
             """
             CREATE INDEX IF NOT EXISTS idx_scope_embeddings_project
                 ON scope_embeddings (project_id)
@@ -74,12 +73,15 @@ class VectorStore:
         ]
 
         with self._connect() as conn, conn.cursor() as cur:
-            for stmt in statements:
+            for i, stmt in enumerate(statements, 1):
                 try:
+                    logger.debug(f"Executing schema statement {i}/{len(statements)}")
                     cur.execute(stmt)
                     conn.commit()
                 except Exception as exc:
                     conn.rollback()
+                    # Log which statement failed
+                    logger.error(f"Failed to execute schema statement {i}: {stmt[:100]}...")
                     raise VectorStoreError(f"Failed to execute schema statement: {exc}") from exc
 
     # ------------------------------------------------------------------

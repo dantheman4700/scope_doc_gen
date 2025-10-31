@@ -11,7 +11,7 @@ export async function POST() {
   if (HAS_SUPABASE) {
     const supabase = createSupabaseRouteClient();
     await supabase.auth.signOut({ scope: "global" });
-    return NextResponse.json({}, { status: 204 });
+    return new NextResponse(null, { status: 204 });
   }
 
   const backendResponse = await fetch(`${API_BASE_URL}/auth/logout`, {
@@ -20,6 +20,17 @@ export async function POST() {
     redirect: "manual"
   });
 
+  // If backend returns 204, we need to handle it without a body
+  if (backendResponse.status === 204) {
+    const response = new NextResponse(null, { status: 204 });
+    const setCookie = backendResponse.headers.get("set-cookie");
+    if (setCookie) {
+      response.headers.set("set-cookie", setCookie);
+    }
+    return response;
+  }
+
+  // For other status codes, return JSON
   const response = NextResponse.json({}, { status: backendResponse.status });
   const setCookie = backendResponse.headers.get("set-cookie");
   if (setCookie) {

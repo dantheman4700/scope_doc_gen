@@ -33,17 +33,23 @@ def _attach_vector_store(app: FastAPI) -> None:
     """Initialise the pgvector-backed store if configured."""
 
     if not VECTOR_STORE_DSN:
+        print("[INFO] Vector store not configured (no VECTOR_STORE_DSN)")
+        app.state.vector_store = None
         return
 
     try:
         embedding_dim = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
+        print(f"[INFO] Initializing vector store with dimension {embedding_dim}")
         store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)
         store.ensure_schema()
         app.state.vector_store = store
+        print("[INFO] Vector store initialized successfully")
     except Exception as exc:  # pragma: no cover - logging path
         app.state.vector_store = None
         detail = exc if isinstance(exc, VectorStoreError) else str(exc)
         print(f"[WARN] Vector store unavailable: {detail}")
+        import traceback
+        traceback.print_exc()
 
 
 def _attach_job_registry(app: FastAPI) -> None:
