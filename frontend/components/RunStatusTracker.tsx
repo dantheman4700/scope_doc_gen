@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
-import type { Artifact, RunStep, RunSummary } from "@/types/backend";
+import type { Artifact, ProjectFile, RunStep, RunSummary } from "@/types/backend";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -25,6 +27,13 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
   const [previewContentType, setPreviewContentType] = useState<string>("");
   const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
+  const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
+  const [embedMessage, setEmbedMessage] = useState<string | null>(null);
+  const [embedError, setEmbedError] = useState<string | null>(null);
+  const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
+  const [docxError, setDocxError] = useState<string | null>(null);
+  const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
 
   useEffect(() => {
     if (!isPolling) {
@@ -96,6 +105,46 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
     return artifacts.find((artifact) => artifact.id === previewArtifactId) ?? null;
   }, [artifacts, previewArtifactId]);
 
+  const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
+
+  useEffect(() => {
+    if (!run.project_id || includedFileIdSet.size === 0) {
+      setIncludedFiles([]);
+      return;
+    }
+
+    let ignore = false;
+    setIsLoadingIncludedFiles(true);
+
+    fetch(`/api/projects/${run.project_id}/files/`)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Unable to load project files (${response.status})`);
+        }
+        return response.json() as Promise<ProjectFile[]>;
+      })
+      .then((projectFiles) => {
+        if (!ignore) {
+          setIncludedFiles(projectFiles.filter((file) => includedFileIdSet.has(file.id)));
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load included files", error);
+        if (!ignore) {
+          setIncludedFiles([]);
+        }
+      })
+      .finally(() => {
+        if (!ignore) {
+          setIsLoadingIncludedFiles(false);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [run.project_id, includedFileIdSet]);
+
   useEffect(() => {
     if (!previewArtifact) {
       setPreviewContent("");
@@ -153,6 +202,57 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
     };
   }, [previewArtifact]);
 
+  const canEmbed = run.status.toLowerCase() === "success";
+
+  const handleEmbed = async () => {
+    setEmbedError(null);
+    setEmbedMessage(null);
+    setIsEmbedding(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/embed`, { method: "POST" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Embedding failed (${response.status})`;
+        throw new Error(detail);
+      }
+      setEmbedMessage("Scope embedded in vector store");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Embedding failed";
+      setEmbedError(message);
+    } finally {
+      setIsEmbedding(false);
+    }
+  };
+
+  const handleDownloadDocx = async () => {
+    setDocxError(null);
+    setIsDownloadingDocx(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/download-docx`);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Download failed (${response.status})`;
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const resultName = run.result_path ? run.result_path.split("/").pop() ?? `run-${run.id}` : `run-${run.id}`;
+      const filename = resultName.replace(/\.md$/i, "") + ".docx";
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Download failed";
+      setDocxError(message);
+    } finally {
+      setIsDownloadingDocx(false);
+    }
+  };
+
   return (
     <div className="run-tracker">
       <section className="run-tracker__header">
@@ -168,9 +268,33 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
             <span>Started: {formatDate(run.started_at)}</span>
             <span>Finished: {formatDate(run.finished_at)}</span>
           </p>
+          {run.parent_run_id ? (
+            <p className="run-tracker__parent">
+              Parent run: <Link className="link" href={`/runs/${run.parent_run_id}`}>{run.parent_run_id}</Link>
+            </p>
+          ) : null}
         </div>
         <div className="run-tracker__actions">
           {error ? <p className="error-text">{error}</p> : null}
+          {embedError ? <p className="error-text">{embedError}</p> : null}
+          {embedMessage ? <p className="success-text">{embedMessage}</p> : null}
+          {docxError ? <p className="error-text">{docxError}</p> : null}
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleDownloadDocx}
+            disabled={isDownloadingDocx || !canEmbed}
+          >
+            {isDownloadingDocx ? "Preparing…" : "Download DOCX"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleEmbed}
+            disabled={!canEmbed || isEmbedding}
+          >
+            {isEmbedding ? "Embedding…" : "Add to vector store"}
+          </button>
           <button
             className="btn-secondary"
             type="button"
@@ -183,6 +307,25 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
       </section>
 
       {run.error ? <p className="error-text">{run.error}</p> : null}
+
+      <section className="run-tracker__metadata">
+        <h2>Included files</h2>
+        {includedFileIdSet.size === 0 ? (
+          <p>No files were associated with this run.</p>
+        ) : isLoadingIncludedFiles ? (
+          <p>Loading file details…</p>
+        ) : includedFiles.length > 0 ? (
+          <ul>
+            {includedFiles.map((file) => (
+              <li key={file.id}>
+                {file.filename} <small style={{ color: "#6b7280" }}>({file.token_count.toLocaleString()} tokens)</small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Files included in this run are no longer available.</p>
+        )}
+      </section>
 
       <section>
         <h2>Steps</h2>
@@ -276,7 +419,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           ) : previewContent ? (
             <div className="preview-pane">
               {shouldRenderMarkdown(previewArtifact, previewContentType) ? (
-                <ReactMarkdown>{previewContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewContent}</ReactMarkdown>
               ) : (
                 <pre>{previewContent}</pre>
               )}

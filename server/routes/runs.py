@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
+import io
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from server.core.research import ResearchMode
+from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL
+from server.core.history_profiles import ProfileEmbedder
+from docx import Document
 
 from ..services import JobRegistry, RunOptions
-from ..dependencies import db_session
+from ..dependencies import db_session, get_storage
 from ..db import models
+from ..storage.projects import ensure_project_structure
+from ..adapters.storage import StorageBackend
 
 
 router = APIRouter(prefix="/projects/{project_id}/runs", tags=["runs"])
@@ -31,6 +40,9 @@ class CreateRunRequest(BaseModel):
     instructions: Optional[str] = None
     enable_vector_store: bool = True
     enable_web_search: bool = True
+    included_file_ids: List[UUID] = Field(default_factory=list)
+    parent_run_id: Optional[UUID] = None
+    what_to_change: Optional[str] = None
 
 
 class RunStatusResponse(BaseModel):
@@ -45,6 +57,10 @@ class RunStatusResponse(BaseModel):
     result_path: Optional[str] = None
     error: Optional[str] = None
     params: dict
+    instructions: Optional[str] = None
+    included_file_ids: List[str] = Field(default_factory=list)
+    parent_run_id: Optional[str] = None
+    extracted_variables_artifact_id: Optional[UUID] = None
 
 
 class RunStepResponse(BaseModel):
@@ -66,29 +82,129 @@ def _registry(request: Request) -> JobRegistry:
     return registry
 
 
+def _storage_key(project_id: str, relative_path: str) -> str:
+    clean = relative_path.replace("\\", "/").lstrip("/")
+    return f"projects/{project_id}/{clean}"
+
+
+async def _ensure_artifact_local(
+    project_id: str,
+    artifact: models.Artifact,
+    storage: StorageBackend,
+) -> Path:
+    paths = ensure_project_structure(DATA_ROOT, project_id)
+    local_path = (paths.root / artifact.path).resolve()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not local_path.exists():
+        storage_key = _storage_key(project_id, artifact.path)
+        await run_in_threadpool(storage.download_to_path, storage_key, local_path)
+
+    return local_path
+
+
+def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
+    document = Document()
+    in_code_block = False
+    code_buffer: List[str] = []
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_code_block:
+                paragraph = document.add_paragraph("\n".join(code_buffer) if code_buffer else "")
+                paragraph.style = "Intense Quote"
+                code_buffer.clear()
+                in_code_block = False
+            else:
+                in_code_block = True
+            continue
+
+        if in_code_block:
+            code_buffer.append(line)
+            continue
+
+        if not stripped:
+            document.add_paragraph("")
+            continue
+
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            text = stripped[level:].strip()
+            level = max(1, min(level, 4))
+            document.add_heading(text or "", level=level)
+            continue
+
+        if stripped.startswith(('- ', '* ')):
+            document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            continue
+
+        if stripped.startswith(">"):
+            paragraph = document.add_paragraph(stripped[1:].strip())
+            paragraph.style = "Intense Quote"
+            continue
+
+        document.add_paragraph(stripped)
+
+    if code_buffer:
+        paragraph = document.add_paragraph("\n".join(code_buffer))
+        paragraph.style = "Intense Quote"
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
 @router.get("/", response_model=List[RunStatusResponse])
 async def list_runs(project_id: str, request: Request) -> List[RunStatusResponse]:
     registry = _registry(request)
     jobs = registry.list_jobs(project_id)
-    return [RunStatusResponse(**job.to_dict()) for job in jobs]
+    responses: List[RunStatusResponse] = []
+    for job in jobs:
+        data = job.to_dict()
+        params = data.get("params", {}) or {}
+        data["instructions"] = params.get("instructions_override")
+        data["included_file_ids"] = params.get("included_file_ids", [])
+        parent_id = params.get("parent_run_id")
+        data["parent_run_id"] = parent_id
+        data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
+        responses.append(RunStatusResponse(**data))
+    return responses
 
 
 @router.post("/", response_model=RunStatusResponse, status_code=status.HTTP_201_CREATED)
 async def create_run(project_id: str, payload: CreateRunRequest, request: Request) -> RunStatusResponse:
     registry = _registry(request)
+    included_ids = [str(file_id) for file_id in payload.included_file_ids]
+    parent_run_id = str(payload.parent_run_id) if payload.parent_run_id else None
+    run_mode = payload.run_mode
+    if parent_run_id:
+        run_mode = "fast"
     options = RunOptions(
         save_intermediate=payload.save_intermediate,
         interactive=payload.interactive,
         project_identifier=payload.project_identifier,
-        run_mode=payload.run_mode,
+        run_mode=run_mode,
         research_mode=payload.research_mode.value,
         force_resummarize=payload.force_resummarize,
         instructions_override=payload.instructions,
         enable_vector_store=payload.enable_vector_store,
         enable_web_search=payload.enable_web_search,
+        included_file_ids=included_ids,
+        parent_run_id=parent_run_id,
+        variables_delta=payload.what_to_change,
     )
     job = registry.create_job(project_id, options)
-    return RunStatusResponse(**job.to_dict())
+    data = job.to_dict()
+    params = data.get("params", {}) or {}
+    data["instructions"] = params.get("instructions_override")
+    data["included_file_ids"] = params.get("included_file_ids", [])
+    data["parent_run_id"] = params.get("parent_run_id")
+    data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
+    return RunStatusResponse(**data)
 
 
 @router.get("/{run_id}", response_model=RunStatusResponse)
@@ -97,7 +213,13 @@ async def get_run(project_id: str, run_id: UUID, request: Request) -> RunStatusR
     job = registry.get_job(run_id)
     if job is None or job.project_id != project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return RunStatusResponse(**job.to_dict())
+    data = job.to_dict()
+    params = data.get("params", {}) or {}
+    data["instructions"] = params.get("instructions_override")
+    data["included_file_ids"] = params.get("included_file_ids", [])
+    data["parent_run_id"] = params.get("parent_run_id")
+    data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
+    return RunStatusResponse(**data)
 
 
 @run_router.get("/{run_id}", response_model=RunStatusResponse)
@@ -117,6 +239,10 @@ async def get_run_by_id(run_id: UUID, db: Session = Depends(db_session)) -> RunS
         result_path=run.result_path,
         error=run.error,
         params=run.params,
+        instructions=run.instructions,
+        included_file_ids=run.included_file_ids or [],
+        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
+        extracted_variables_artifact_id=run.extracted_variables_artifact_id,
     )
 
 
@@ -137,4 +263,129 @@ async def get_run_steps(run_id: UUID, db: Session = Depends(db_session)) -> List
 @run_router.get("/{run_id}/events")
 async def stream_run_events(run_id: UUID) -> None:
     raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Run event stream not implemented yet")
+
+
+@run_router.post("/{run_id}/embed", status_code=status.HTTP_201_CREATED)
+async def embed_run_output(
+    run_id: UUID,
+    request: Request,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    vector_store = getattr(request.app.state, "vector_store", None)
+    if vector_store is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector store unavailable")
+
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before embedding")
+
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rendered document available for embedding")
+
+    project_uuid = None
+    project_id_str = str(run.project_id)
+    try:
+        project_uuid = UUID(project_id_str)
+    except Exception:
+        project_uuid = None
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        content = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    try:
+        embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+        embedding = list(embedder.embed(content))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Embedding generation failed: {exc}")
+
+    metadata = {
+        "project_id": project_id_str,
+        "run_id": str(run.id),
+        "mode": run.mode,
+        "research_mode": run.research_mode,
+        "result_path": run.result_path,
+        "artifact_path": artifact.path,
+    }
+    if run.instructions:
+        metadata["instructions"] = run.instructions
+
+    try:
+        embedding_id = vector_store.upsert_embedding(
+            embedding=embedding,
+            project_id=project_uuid,
+            doc_kind="rendered_scope",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to store embedding: {exc}")
+
+    return {"embedding_id": str(embedding_id)}
+
+
+@run_router.get("/{run_id}/download-docx")
+async def download_run_docx(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
+
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        content = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    buffer = _markdown_to_docx_bytes(content)
+    filename_stem = Path(artifact.path).stem or f"run-{run.id}"
+    docx_filename = f"{filename_stem}.docx"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{docx_filename}"'
+    }
+    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return StreamingResponse(buffer, media_type=media_type, headers=headers)
 

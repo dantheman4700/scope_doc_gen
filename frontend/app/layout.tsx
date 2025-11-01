@@ -26,7 +26,6 @@ export default async function RootLayout({
           </div>
           <div className="nav-links">
             <Link href="/projects">Projects</Link>
-            <Link href="/search">Search</Link>
             {user ? (
               <>
                 <span>{user.email}</span>

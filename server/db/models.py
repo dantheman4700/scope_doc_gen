@@ -8,8 +8,10 @@ from uuid import UUID as UUID_t, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
 )
@@ -63,6 +65,11 @@ class ProjectFile(Base):
     media_type: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_summarized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    summary_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_too_large: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pdf_page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     project: Mapped[Project] = relationship("Project", back_populates="files")
 
@@ -81,10 +88,33 @@ class Run(Base):
     params: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     result_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    included_file_ids: Mapped[List[str]] = mapped_column(JSONB, default=list, nullable=False)
+    instructions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    extracted_variables_artifact_id: Mapped[Optional[UUID_t]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_run_id: Mapped[Optional[UUID_t]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
 
     project: Mapped[Project] = relationship("Project", back_populates="runs")
     steps: Mapped[List["RunStep"]] = relationship("RunStep", back_populates="run", cascade="all, delete-orphan")
-    artifacts: Mapped[List["Artifact"]] = relationship("Artifact", back_populates="run", cascade="all, delete-orphan")
+    artifacts: Mapped[List["Artifact"]] = relationship(
+        "Artifact",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        foreign_keys="Artifact.run_id",
+    )
+    parent_run: Mapped[Optional["Run"]] = relationship(
+        "Run",
+        remote_side="Run.id",
+        backref="child_runs",
+    )
+    extracted_variables_artifact: Mapped[Optional["Artifact"]] = relationship(
+        "Artifact",
+        foreign_keys=[extracted_variables_artifact_id],
+        post_update=True,
+    )
 
 
 class RunStep(Base):
@@ -111,7 +141,11 @@ class Artifact(Base):
     meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
 
-    run: Mapped[Run] = relationship("Run", back_populates="artifacts")
+    run: Mapped[Run] = relationship(
+        "Run",
+        back_populates="artifacts",
+        foreign_keys=[run_id],
+    )
 
 
 class EmbeddingRecord(Base):

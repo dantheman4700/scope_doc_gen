@@ -25,11 +25,18 @@ echo "✅ Frontend sync complete"
 echo "🔨 Building frontend..."
 echo ""
 
-# Load nvm and build
+# Load nvm and select desired Node version before building
 export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  . "$NVM_DIR/nvm.sh"
+  # Prefer the user's default (higher) Node version; fall back to latest LTS
+  if ! nvm use >/dev/null 2>&1; then
+    nvm use --lts >/dev/null 2>&1 || true
+  fi
+fi
 
 cd "$DEST_DIR"
+npm install
 npm run build
 
 if [ $? -ne 0 ]; then

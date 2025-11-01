@@ -23,7 +23,6 @@ from .routes import (
     run_detail_router,
     embeddings_router,
     artifacts_router,
-    search_router,
     system_router,
 )
 from .services import VectorStore, VectorStoreError, JobRegistry
@@ -83,7 +82,6 @@ def create_app() -> FastAPI:
     app.include_router(run_detail_router)
     app.include_router(embeddings_router)
     app.include_router(artifacts_router)
-    app.include_router(search_router)
     app.include_router(system_router)
 
     _attach_vector_store(app)

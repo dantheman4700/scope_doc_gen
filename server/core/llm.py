@@ -113,6 +113,64 @@ class ClaudeExtractor:
                 print(f"[ERROR] Claude API call failed: {msg}")
                 raise
 
+    def rewrite_variables(
+        self,
+        current_variables: Dict[str, Any],
+        change_instructions: str,
+        variables_schema: Dict[str, Any],
+        variables_guide: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply high-level change instructions to an existing variables JSON payload."""
+
+        if not change_instructions.strip():
+            return current_variables
+
+        system_prompt = (
+            "You are an expert solutions architect updating a scope document JSON payload. "
+            "You will be given the current variables JSON along with change instructions. "
+            "Apply the changes, preserve unspecified fields, and ensure the result matches the schema and style guide.\n\n"
+            f"VARIABLES SCHEMA:\n{json.dumps(variables_schema, indent=2)}\n\n"
+            f"VARIABLES STYLE GUIDE:\n{json.dumps(variables_guide, indent=2)}\n\n"
+            "Return ONLY the full updated JSON object."
+        )
+
+        user_prompt = (
+            "CURRENT VARIABLES JSON:\n"
+            f"{json.dumps(current_variables, indent=2)}\n\n"
+            "CHANGE INSTRUCTIONS:\n"
+            f"{change_instructions}\n\n"
+            "Update the JSON to reflect the requested changes. Do not remove fields unless explicitly instructed."
+        )
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                temperature=max(0.1, TEMPERATURE),
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": user_prompt,
+                            }
+                        ],
+                    }
+                ],
+            )
+        except Exception as exc:
+            print(f"[ERROR] Failed to update variables: {exc}")
+            return current_variables
+
+        response_text = response.content[0].text
+        try:
+            return self._parse_response(response_text)
+        except Exception:
+            print("[WARN] Could not parse updated variables; returning original values")
+            return current_variables
+
     def extract_variables_with_raw(
         self,
         combined_documents: str,

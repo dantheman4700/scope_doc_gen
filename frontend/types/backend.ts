@@ -15,6 +15,11 @@ export interface ProjectFile {
   checksum: string;
   created_at: string;
   path: string;
+  token_count: number;
+  is_summarized: boolean;
+  summary_text?: string | null;
+  is_too_large: boolean;
+  pdf_page_count?: number | null;
 }
 
 export interface RunSummary {
@@ -29,6 +34,10 @@ export interface RunSummary {
   result_path?: string | null;
   error?: string | null;
   params: Record<string, unknown>;
+  instructions?: string | null;
+  included_file_ids: string[];
+  parent_run_id?: string | null;
+  extracted_variables_artifact_id?: string | null;
 }
 
 export interface RunStep {

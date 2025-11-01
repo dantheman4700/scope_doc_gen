@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,6 +47,9 @@ class RunOptions:
     instructions_override: Optional[str] = None
     enable_vector_store: bool = True
     enable_web_search: bool = True
+    included_file_ids: List[str] = field(default_factory=list)
+    parent_run_id: Optional[str] = None
+    variables_delta: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +62,9 @@ class RunOptions:
             "instructions_override": self.instructions_override,
             "enable_vector_store": self.enable_vector_store,
             "enable_web_search": self.enable_web_search,
+            "included_file_ids": self.included_file_ids,
+            "parent_run_id": self.parent_run_id,
+            "variables_delta": self.variables_delta,
         }
 
 
@@ -139,33 +146,36 @@ class JobRegistry:
             return
 
         paths = ensure_project_structure(DATA_ROOT, job.project_id)
-        if self._use_remote_storage:
-            sync_step_id = self._start_run_step(job.id, "sync inputs")
-            try:
-                sync_errors, sync_warnings = self._prepare_workspace(job.project_id, paths)
-            except Exception as exc:  # pragma: no cover - defensive
-                self._finish_run_step(sync_step_id, "failed", str(exc))
-                self._mark_failed(job, str(exc))
-                self._update_run(job.id, status=JobState.FAILED, finished_at=datetime.utcnow(), error=str(exc))
-                return
+        sync_step_id = self._start_run_step(job.id, "sync inputs")
+        try:
+            sync_errors, sync_warnings = self._prepare_workspace(
+                job.project_id,
+                paths,
+                included_ids=options.included_file_ids,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self._finish_run_step(sync_step_id, "failed", str(exc))
+            self._mark_failed(job, str(exc))
+            self._update_run(job.id, status=JobState.FAILED, finished_at=datetime.utcnow(), error=str(exc))
+            return
 
-            if sync_errors:
-                detail = "\n".join(sync_errors)
-                self._finish_run_step(sync_step_id, "failed", detail)
-                self._mark_failed(job, "Unable to synchronize required inputs from storage")
-                self._update_run(
-                    job.id,
-                    status=JobState.FAILED,
-                    finished_at=datetime.utcnow(),
-                    error=detail,
-                )
-                return
+        if sync_errors:
+            detail = "\n".join(sync_errors)
+            self._finish_run_step(sync_step_id, "failed", detail)
+            self._mark_failed(job, "Unable to synchronize required inputs from storage")
+            self._update_run(
+                job.id,
+                status=JobState.FAILED,
+                finished_at=datetime.utcnow(),
+                error=detail,
+            )
+            return
 
-            detail = "\n".join(sync_warnings) if sync_warnings else None
-            self._finish_run_step(sync_step_id, "success", detail)
-            if sync_warnings:
-                job.params.setdefault("sync_warnings", sync_warnings)
-                self._update_run(job.id, params=job.params)
+        detail = "\n".join(sync_warnings) if sync_warnings else None
+        self._finish_run_step(sync_step_id, "success", detail)
+        if sync_warnings:
+            job.params.setdefault("sync_warnings", sync_warnings)
+            self._update_run(job.id, params=job.params)
         step_ids: Dict[str, UUID] = {}
 
         def step_callback(step: str, event: str, detail: Optional[str] = None) -> None:
@@ -193,7 +203,14 @@ class JobRegistry:
                 research_mode=options.research_mode,
                 status=JobState.PENDING,
                 params=options.to_dict(),
+                included_file_ids=options.included_file_ids,
+                instructions=options.instructions_override,
             )
+            if options.parent_run_id:
+                try:
+                    run_record.parent_run_id = UUID(options.parent_run_id)
+                except ValueError:
+                    pass
             session.add(run_record)
 
         if options.instructions_override:
@@ -219,25 +236,33 @@ class JobRegistry:
                 output_dir=paths.outputs_dir,
                 project_dir=paths.root,
             )
-            result_path = generator.generate(
-                save_intermediate=options.save_intermediate,
-                interactive=options.interactive,
-                project_identifier=options.project_identifier,
-                smart_ingest=True,
-                context_notes_path=None,
-                date_override=None,
-                research_mode=options.research_mode,
-                run_mode=options.run_mode,
-                force_resummarize=options.force_resummarize,
-                step_callback=step_callback,
-                allow_web_search=options.enable_web_search,
-            )
+
+            if options.parent_run_id:
+                result_path = self._run_quick_regen(job, options, generator, paths, step_callback)
+            else:
+                result_path = generator.generate(
+                    save_intermediate=options.save_intermediate,
+                    interactive=options.interactive,
+                    project_identifier=options.project_identifier,
+                    smart_ingest=True,
+                    context_notes_path=None,
+                    date_override=None,
+                    research_mode=options.research_mode,
+                    run_mode=options.run_mode,
+                    force_resummarize=options.force_resummarize,
+                    step_callback=step_callback,
+                    allow_web_search=options.enable_web_search,
+                )
             result_rel = self._relative_to_project(paths.root, result_path)
             if self._use_remote_storage and result_rel:
                 self._upload_to_storage(job.project_id, paths.root / Path(result_rel))
             self._mark_success(job, result_rel)
             self._update_run(job.id, status=JobState.SUCCESS, finished_at=datetime.utcnow(), result_path=result_rel)
-            self._record_artifacts(job.id, job.project_id, paths, result_rel)
+            artifact_ids = self._record_artifacts(job.id, job.project_id, paths, result_rel)
+            variables_artifact_id = artifact_ids.get("variables")
+            if variables_artifact_id:
+                self._update_run(job.id, extracted_variables_artifact_id=variables_artifact_id)
+                job.params.setdefault("extracted_variables_artifact_id", str(variables_artifact_id))
             self._record_embedding(job, paths, result_rel, options)
         except Exception as exc:  # pragma: no cover - execution safeguard
             self._mark_failed(job, str(exc))
@@ -291,7 +316,112 @@ class JobRegistry:
             if logs:
                 step.logs = logs
 
-    def _record_artifacts(self, run_id: UUID, project_id: str, paths, result_rel: Optional[str]) -> None:
+    def _run_quick_regen(
+        self,
+        job: JobStatus,
+        options: RunOptions,
+        generator: ScopeDocGenerator,
+        paths,
+        step_callback,
+    ) -> str:
+        if not options.parent_run_id:
+            raise ValueError("Quick regen requires parent_run_id")
+
+        parent_uuid = UUID(options.parent_run_id)
+
+        def emit(step: str, event: str, detail: Optional[str] = None) -> None:
+            if step_callback is None:
+                return
+            try:
+                step_callback(step, event, detail)
+            except Exception:
+                pass
+
+        emit("load_baseline", "started", None)
+
+        with get_session() as session:
+            parent_run = session.get(models.Run, parent_uuid)
+            if parent_run is None:
+                raise ValueError("Parent run not found")
+            if str(parent_run.project_id) != job.project_id:
+                raise ValueError("Parent run belongs to a different project")
+            if parent_run.status != JobState.SUCCESS:
+                raise ValueError("Parent run must be successful for quick regeneration")
+
+            variables_artifact = (
+                session.query(models.Artifact)
+                .filter(
+                    models.Artifact.run_id == parent_uuid,
+                    models.Artifact.kind == "variables",
+                )
+                .order_by(models.Artifact.created_at.desc())
+                .first()
+            )
+
+        if variables_artifact is None:
+            raise ValueError("Parent run is missing extracted variables")
+
+        artifact_path = (paths.root / Path(variables_artifact.path)).resolve()
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        if not artifact_path.exists() and self._use_remote_storage:
+            key = self._storage_key(job.project_id, variables_artifact.path)
+            self._storage.download_to_path(key, artifact_path)
+
+        if not artifact_path.exists():
+            raise FileNotFoundError(f"Variables artifact not found at {artifact_path}")
+
+        with artifact_path.open('r', encoding='utf-8') as f:
+            baseline_variables = json.load(f)
+
+        emit("load_baseline", "completed", None)
+
+        updated_variables = baseline_variables
+        change_request = (options.variables_delta or "").strip()
+
+        if change_request:
+            emit("adjust_variables", "started", None)
+            try:
+                updated_variables = generator.extractor.rewrite_variables(
+                    baseline_variables,
+                    change_request,
+                    generator.variables_schema,
+                    generator.variables_guide,
+                )
+            except Exception as exc:
+                emit("adjust_variables", "failed", str(exc))
+                raise
+            emit("adjust_variables", "completed", None)
+        else:
+            emit("adjust_variables", "completed", "No changes requested")
+
+        try:
+            updated_variables['date_created'] = datetime.utcnow().date().isoformat()
+        except Exception:
+            pass
+
+        variables_output = generator.output_dir / "extracted_variables.json"
+        variables_output.parent.mkdir(parents=True, exist_ok=True)
+        with variables_output.open('w', encoding='utf-8') as f:
+            json.dump(updated_variables, f, indent=2)
+
+        emit("render", "started", None)
+        try:
+            rendered_path = generator.generate_from_variables(variables_output)
+        except Exception as exc:
+            emit("render", "failed", str(exc))
+            raise
+        output_name = Path(rendered_path).name
+        emit("render", "completed", output_name)
+
+        return rendered_path
+
+    def _record_artifacts(
+        self,
+        run_id: UUID,
+        project_id: str,
+        paths,
+        result_rel: Optional[str],
+    ) -> Dict[str, UUID]:
         entries = []
         context_pack_path = paths.artifacts_dir / "context_pack.json"
         if context_pack_path.exists():
@@ -306,8 +436,9 @@ class JobRegistry:
             if rendered_path.exists():
                 entries.append(("rendered_doc", rendered_path, {"type": "markdown"}))
 
+        created: Dict[str, UUID] = {}
         if not entries:
-            return
+            return created
 
         with get_session() as session:
             for kind, abs_path, meta in entries:
@@ -324,6 +455,9 @@ class JobRegistry:
                     meta=meta or {},
                 )
                 session.add(artifact)
+                session.flush()
+                created[kind] = artifact.id
+        return created
 
     def _relative_to_project(self, root: Path, path_str: Optional[str]) -> Optional[str]:
         if not path_str:
@@ -400,7 +534,13 @@ class JobRegistry:
     # ------------------------------------------------------------------
     # Storage helpers
     # ------------------------------------------------------------------
-    def _prepare_workspace(self, project_id: str, paths) -> Tuple[List[str], List[str]]:
+    def _prepare_workspace(
+        self,
+        project_id: str,
+        paths,
+        *,
+        included_ids: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[str]]:
         self._clear_directory(paths.input_dir)
         try:
             project_uuid = UUID(project_id)
@@ -410,11 +550,18 @@ class JobRegistry:
         warnings: List[str] = []
         errors: List[str] = []
         with get_session() as session:
-            files = (
+            query = (
                 session.query(models.ProjectFile)
                 .filter(models.ProjectFile.project_id == project_uuid)
-                .all()
             )
+            if included_ids:
+                try:
+                    uuid_list = [UUID(fid) for fid in included_ids]
+                except Exception:
+                    uuid_list = []
+                if uuid_list:
+                    query = query.filter(models.ProjectFile.id.in_(uuid_list))
+            files = query.all()
         for record in files:
             target = paths.root / record.path
             target.parent.mkdir(parents=True, exist_ok=True)
