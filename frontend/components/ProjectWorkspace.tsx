@@ -56,11 +56,10 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
   const [instructions, setInstructions] = useState<string>("");
   const [researchMode, setResearchMode] = useState<string>("quick");
   const [vectorStoreEnabled, setVectorStoreEnabled] = useState<boolean>(true);
-  const [saveIntermediate, setSaveIntermediate] = useState<boolean>(true);
-  const [forceResummarize, setForceResummarize] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
 
   const selectedFiles = useMemo(
     () => files.filter((file) => selectedFileIds.has(file.id)),
@@ -122,6 +121,35 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     [project.id]
   );
 
+  const handleToggleMode = useCallback(
+    async (fileId: string) => {
+      setErrorMessage(null);
+      setTogglingIds((prev) => new Set(prev).add(fileId));
+      try {
+        const response = await fetch(`/api/projects/${project.id}/files/${fileId}/toggle-mode`, {
+          method: "PATCH"
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as FetchError;
+          const detail = payload.detail ?? payload.message ?? "Unable to toggle file mode";
+          throw new Error(detail);
+        }
+        const updatedFile = (await response.json()) as ProjectFile;
+        setFiles((prev) => prev.map((file) => (file.id === updatedFile.id ? updatedFile : file)));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to toggle file mode";
+        setErrorMessage(message);
+      } finally {
+        setTogglingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(fileId);
+          return next;
+        });
+      }
+    },
+    [project.id]
+  );
+
   const handleUseRunAsTemplate = useCallback(
     (run: RunSummary) => {
       if (run.instructions) {
@@ -143,16 +171,6 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       if (typeof enableVectorStoreParam === "boolean") {
         setVectorStoreEnabled(enableVectorStoreParam);
       }
-
-      const saveIntermediateParam = params.save_intermediate;
-      if (typeof saveIntermediateParam === "boolean") {
-        setSaveIntermediate(saveIntermediateParam);
-      }
-
-      const forceResummarizeParam = params.force_resummarize;
-      if (typeof forceResummarizeParam === "boolean") {
-        setForceResummarize(forceResummarizeParam);
-      }
     },
     []
   );
@@ -170,8 +188,6 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     const payload = {
       run_mode: "full",
       research_mode: researchMode,
-      force_resummarize: forceResummarize,
-      save_intermediate: saveIntermediate,
       instructions: instructions.trim() || undefined,
       enable_vector_store: vectorStoreEnabled,
       enable_web_search: researchMode !== "none",
@@ -258,7 +274,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 <th>Size</th>
                 <th>Tokens</th>
                 <th>Status</th>
-                <th style={{ width: "140px" }}>Actions</th>
+                <th style={{ width: "220px" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -278,6 +294,14 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                   } else if (file.is_summarized) {
                     statusLabel = "Summarized";
                   }
+                  const usingSummary = file.use_summary_for_generation;
+                  const tokenModeLabel = usingSummary ? "Using summary" : "Using native";
+                  const toggling = togglingIds.has(file.id);
+                  const canToggle = file.is_summarized || file.is_too_large;
+                  const toggleDisabled =
+                    toggling || summarizing ||
+                    (file.is_too_large && usingSummary) ||
+                    (!usingSummary && !file.is_summarized);
 
                   return (
                     <tr key={file.id} className={selected ? "table-row--active" : undefined}>
@@ -298,9 +322,24 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                         </div>
                       </td>
                       <td>{formatBytes(file.size)}</td>
-                      <td>{file.token_count.toLocaleString()}</td>
-                      <td>{statusLabel}</td>
-                      <td style={{ display: "flex", gap: "0.5rem" }}>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <span>{file.token_count.toLocaleString()}</span>
+                          <small style={{ color: "#6b7280" }}>{tokenModeLabel}</small>
+                          {usingSummary && file.native_token_count ? (
+                            <small style={{ color: "#6b7280" }}>
+                              Native tokens: {file.native_token_count.toLocaleString()}
+                            </small>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                          <span>{statusLabel}</span>
+                          <span className="chip chip--info">{usingSummary ? "Summary mode" : "Native mode"}</span>
+                        </div>
+                      </td>
+                      <td style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                         <button
                           className="btn-secondary"
                           type="button"
@@ -309,6 +348,23 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                         >
                           {summarizing ? "Summarizing…" : file.is_summarized ? "Summarized" : "Summarize"}
                         </button>
+                        {canToggle ? (
+                          <button
+                            className="btn-secondary"
+                            type="button"
+                            onClick={() => handleToggleMode(file.id)}
+                            disabled={toggleDisabled}
+                            title={
+                              file.is_too_large && usingSummary
+                                ? "Large files must use the summary"
+                                : !file.is_summarized && !usingSummary
+                                ? "Summarize file to enable"
+                                : undefined
+                            }
+                          >
+                            {toggling ? "Updating…" : usingSummary ? "Use native" : "Use summary"}
+                          </button>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -346,30 +402,6 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
               >
                 <option value="enabled">Enabled</option>
                 <option value="disabled">Disabled</option>
-              </select>
-            </div>
-            <div className="form-field">
-              <label htmlFor="save-intermediate">Save intermediate variables</label>
-              <select
-                id="save-intermediate"
-                name="save_intermediate"
-                value={saveIntermediate ? "yes" : "no"}
-                onChange={(event) => setSaveIntermediate(event.target.value === "yes")}
-              >
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </div>
-            <div className="form-field">
-              <label htmlFor="force-summarize">Force resummarize inputs</label>
-              <select
-                id="force-summarize"
-                name="force_resummarize"
-                value={forceResummarize ? "yes" : "no"}
-                onChange={(event) => setForceResummarize(event.target.value === "yes")}
-              >
-                <option value="no">No</option>
-                <option value="yes">Yes</option>
               </select>
             </div>
           </div>

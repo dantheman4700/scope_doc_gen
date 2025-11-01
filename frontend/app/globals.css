@@ -387,3 +387,8 @@ button, input, select, textarea {
   color: #b45309;
 }
 
+.chip--info {
+  background-color: #e0f2fe;
+  color: #0369a1;
+}
+

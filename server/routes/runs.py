@@ -33,8 +33,6 @@ run_router = APIRouter(prefix="/runs", tags=["runs"])
 class CreateRunRequest(BaseModel):
     run_mode: str = Field("full", pattern="^(full|fast)$")
     research_mode: ResearchMode = ResearchMode.QUICK
-    force_resummarize: bool = False
-    save_intermediate: bool = True
     interactive: bool = False
     project_identifier: Optional[str] = None
     instructions: Optional[str] = None
@@ -158,20 +156,85 @@ def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
     return buffer
 
 
+def _job_to_response(job: JobStatus) -> RunStatusResponse:
+    data = job.to_dict()
+    params = data.get("params", {}) or {}
+    data["instructions"] = params.get("instructions_override")
+    data["included_file_ids"] = params.get("included_file_ids", [])
+    data["parent_run_id"] = params.get("parent_run_id")
+    data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
+    return RunStatusResponse(**data)
+
+
+def _db_run_to_response(run: models.Run) -> RunStatusResponse:
+    return RunStatusResponse(
+        id=run.id,
+        project_id=str(run.project_id),
+        status=run.status,
+        run_mode=run.mode,
+        research_mode=run.research_mode,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        result_path=run.result_path,
+        error=run.error,
+        params=run.params or {},
+        instructions=run.instructions,
+        included_file_ids=run.included_file_ids or [],
+        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
+        extracted_variables_artifact_id=run.extracted_variables_artifact_id,
+    )
+
+
 @router.get("/", response_model=List[RunStatusResponse])
-async def list_runs(project_id: str, request: Request) -> List[RunStatusResponse]:
+async def list_runs(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(db_session),
+) -> List[RunStatusResponse]:
     registry = _registry(request)
     jobs = registry.list_jobs(project_id)
+    job_map: dict[UUID, JobStatus] = {job.id: job for job in jobs}
+
+    try:
+        project_uuid = UUID(project_id)
+    except ValueError:
+        project_uuid = None
+
     responses: List[RunStatusResponse] = []
-    for job in jobs:
-        data = job.to_dict()
-        params = data.get("params", {}) or {}
-        data["instructions"] = params.get("instructions_override")
-        data["included_file_ids"] = params.get("included_file_ids", [])
-        parent_id = params.get("parent_run_id")
-        data["parent_run_id"] = parent_id
-        data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
-        responses.append(RunStatusResponse(**data))
+
+    if project_uuid is not None:
+        db_runs = (
+            db.query(models.Run)
+            .filter(models.Run.project_id == project_uuid)
+            .order_by(models.Run.created_at.desc())
+            .all()
+        )
+        for run in db_runs:
+            response = _db_run_to_response(run)
+            job = job_map.pop(run.id, None)
+            if job is not None:
+                live = _job_to_response(job)
+                response.status = live.status
+                response.started_at = live.started_at or response.started_at
+                response.finished_at = live.finished_at or response.finished_at
+                response.result_path = live.result_path or response.result_path
+                response.error = live.error or response.error
+                response.params = live.params or response.params
+                response.instructions = live.instructions or response.instructions
+                response.included_file_ids = live.included_file_ids or response.included_file_ids
+                response.parent_run_id = live.parent_run_id or response.parent_run_id
+                response.extracted_variables_artifact_id = (
+                    live.extracted_variables_artifact_id or response.extracted_variables_artifact_id
+                )
+            responses.append(response)
+
+    # Include any remaining in-memory jobs (e.g., very new jobs not yet persisted)
+    for job in job_map.values():
+        responses.append(_job_to_response(job))
+
+    # Sort by created_at desc for stable ordering
+    responses.sort(key=lambda r: r.created_at, reverse=True)
     return responses
 
 
@@ -184,12 +247,10 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
     if parent_run_id:
         run_mode = "fast"
     options = RunOptions(
-        save_intermediate=payload.save_intermediate,
         interactive=payload.interactive,
         project_identifier=payload.project_identifier,
         run_mode=run_mode,
         research_mode=payload.research_mode.value,
-        force_resummarize=payload.force_resummarize,
         instructions_override=payload.instructions,
         enable_vector_store=payload.enable_vector_store,
         enable_web_search=payload.enable_web_search,
@@ -208,18 +269,22 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
 
 
 @router.get("/{run_id}", response_model=RunStatusResponse)
-async def get_run(project_id: str, run_id: UUID, request: Request) -> RunStatusResponse:
+async def get_run(
+    project_id: str,
+    run_id: UUID,
+    request: Request,
+    db: Session = Depends(db_session),
+) -> RunStatusResponse:
     registry = _registry(request)
     job = registry.get_job(run_id)
-    if job is None or job.project_id != project_id:
+    if job is not None and job.project_id == project_id:
+        return _job_to_response(job)
+
+    run = db.get(models.Run, run_id)
+    if run is not None and str(run.project_id) == project_id:
+        return _db_run_to_response(run)
+
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    data = job.to_dict()
-    params = data.get("params", {}) or {}
-    data["instructions"] = params.get("instructions_override")
-    data["included_file_ids"] = params.get("included_file_ids", [])
-    data["parent_run_id"] = params.get("parent_run_id")
-    data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
-    return RunStatusResponse(**data)
 
 
 @run_router.get("/{run_id}", response_model=RunStatusResponse)

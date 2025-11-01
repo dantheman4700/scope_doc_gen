@@ -61,6 +61,8 @@ class ProjectFileResponse(BaseModel):
     summary_text: Optional[str] = None
     is_too_large: bool
     pdf_page_count: Optional[int] = None
+    use_summary_for_generation: bool
+    native_token_count: int
 
 
 async def _analyze_uploaded_file(
@@ -89,8 +91,10 @@ async def _analyze_uploaded_file(
     is_too_large = size > MAX_NATIVE_PDF_BYTES or (is_pdf and pdf_page_count and pdf_page_count > MAX_NATIVE_PDF_PAGES)
 
     token_count = 0
+    native_token_count = 0
     is_summarized = False
     summary_text: Optional[str] = None
+    use_summary_for_generation = is_too_large  # Default: use summary only if too large
 
     if not is_too_large:
         blocks = _build_token_blocks(
@@ -101,13 +105,30 @@ async def _analyze_uploaded_file(
         )
         if blocks:
             try:
-                token_count = await count_tokens_for_blocks(blocks)
+                native_token_count = await count_tokens_for_blocks(blocks)
+                token_count = native_token_count  # Initially, token_count = native count
             except TokenCountingError as exc:
                 LOGGER.warning("Token counting failed for %s: %s", filename, exc)
+                native_token_count = 0
                 token_count = 0
         else:
             LOGGER.info("No countable content for %s; defaulting token count to 0", filename)
     else:
+        # Large files: calculate native token count first (for reference)
+        blocks = _build_token_blocks(
+            filename=filename,
+            media_type=normalized_media_type,
+            contents=contents,
+            suffix=suffix,
+        )
+        if blocks:
+            try:
+                native_token_count = await count_tokens_for_blocks(blocks)
+            except TokenCountingError as exc:
+                LOGGER.warning("Token counting (native) failed for %s: %s", filename, exc)
+                native_token_count = 0
+        
+        # Then create summary
         summary_text = await _summarize_file_contents(filename, contents)
         if summary_text:
             is_summarized = True
@@ -118,14 +139,17 @@ async def _analyze_uploaded_file(
                 token_count = max(1, len(summary_text) // 4)
         else:
             LOGGER.warning("Summary unavailable for oversized file %s", filename)
+            token_count = 0
 
     return {
         "media_type": normalized_media_type,
         "token_count": token_count,
+        "native_token_count": native_token_count,
         "is_summarized": is_summarized,
         "summary_text": summary_text,
         "is_too_large": is_too_large,
         "pdf_page_count": pdf_page_count,
+        "use_summary_for_generation": use_summary_for_generation,
     }
 
 
@@ -322,10 +346,12 @@ async def upload_files(
                 media_type=metadata["media_type"],
                 checksum=checksum,
                 token_count=metadata["token_count"],
+                native_token_count=metadata["native_token_count"],
                 is_summarized=metadata["is_summarized"],
                 summary_text=metadata.get("summary_text"),
                 is_too_large=metadata["is_too_large"],
                 pdf_page_count=metadata.get("pdf_page_count"),
+                use_summary_for_generation=metadata["use_summary_for_generation"],
             )
             db.add(record)
             records.append(record)
@@ -385,14 +411,75 @@ async def summarize_file(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to summarize file")
 
     try:
-        token_count = await count_tokens_for_blocks([make_text_block(summary_text)])
+        summary_token_count = await count_tokens_for_blocks([make_text_block(summary_text)])
     except TokenCountingError as exc:
         LOGGER.warning("Token counting (summary) failed for %s: %s", record.filename, exc)
-        token_count = max(1, len(summary_text) // 4)
+        summary_token_count = max(1, len(summary_text) // 4)
+
+    # Store native token count if not already set
+    if record.native_token_count == 0 and record.token_count > 0:
+        record.native_token_count = record.token_count
 
     record.summary_text = summary_text
     record.is_summarized = True
-    record.token_count = token_count
+    record.token_count = summary_token_count
+    record.use_summary_for_generation = True
+    db.commit()
+    db.refresh(record)
+
+    return ProjectFileResponse.model_validate(record)
+
+
+@router.patch("/{file_id}/toggle-mode", response_model=ProjectFileResponse)
+async def toggle_file_mode(
+    project_id: UUID,
+    file_id: UUID,
+    db: Session = Depends(db_session),
+) -> ProjectFileResponse:
+    """Toggle between using native file or summary for scope generation.
+    
+    This endpoint switches the use_summary_for_generation flag and updates
+    the token_count to reflect the selected mode.
+    """
+    project = _get_project(db, project_id)
+    record = (
+        db.query(models.ProjectFile)
+        .filter(
+            models.ProjectFile.project_id == project.id,
+            models.ProjectFile.id == file_id,
+        )
+        .one_or_none()
+    )
+
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    # Can't toggle if file is too large and has no summary
+    if record.is_too_large and not record.is_summarized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot use native file for oversized file without summary",
+        )
+
+    # Can't toggle to summary if no summary exists
+    if not record.use_summary_for_generation and not record.is_summarized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot use summary mode: file has not been summarized yet",
+        )
+
+    # Toggle the mode
+    record.use_summary_for_generation = not record.use_summary_for_generation
+
+    # Update token_count to reflect the selected mode
+    if record.use_summary_for_generation:
+        # Switching to summary mode - token_count should already be summary count
+        # (set during summarization)
+        pass
+    else:
+        # Switching to native mode - restore native token count
+        record.token_count = record.native_token_count
+
     db.commit()
     db.refresh(record)
 

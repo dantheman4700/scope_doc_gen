@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +30,9 @@ from ..dependencies import get_storage
 from .vector_store import VectorStore
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class JobState(str):
     PENDING = "pending"
     RUNNING = "running"
@@ -38,12 +42,10 @@ class JobState(str):
 
 @dataclass
 class RunOptions:
-    save_intermediate: bool = True
     interactive: bool = False
     project_identifier: Optional[str] = None
     run_mode: str = "full"
     research_mode: str = ResearchMode.QUICK.value
-    force_resummarize: bool = False
     instructions_override: Optional[str] = None
     enable_vector_store: bool = True
     enable_web_search: bool = True
@@ -53,12 +55,10 @@ class RunOptions:
 
     def to_dict(self) -> dict:
         return {
-            "save_intermediate": self.save_intermediate,
             "interactive": self.interactive,
             "project_identifier": self.project_identifier,
             "run_mode": self.run_mode,
             "research_mode": self.research_mode,
-            "force_resummarize": self.force_resummarize,
             "instructions_override": self.instructions_override,
             "enable_vector_store": self.enable_vector_store,
             "enable_web_search": self.enable_web_search,
@@ -123,6 +123,7 @@ class JobRegistry:
         with self._lock:
             self._jobs[job_id] = job
 
+        self._ensure_run_record(job, options)
         self._executor.submit(self._execute_job, job_id, options)
         return job
 
@@ -136,6 +137,31 @@ class JobRegistry:
     def get_job(self, job_id: UUID) -> Optional[JobStatus]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def _ensure_run_record(self, job: JobStatus, options: RunOptions) -> None:
+        with get_session() as session:
+            run_record = session.get(models.Run, job.id)
+            if run_record is None:
+                run_record = models.Run(
+                    id=job.id,
+                    project_id=job.project_id,
+                )
+                session.add(run_record)
+
+            run_record.mode = options.run_mode
+            run_record.research_mode = options.research_mode
+            run_record.status = JobState.PENDING
+            run_record.params = options.to_dict()
+            run_record.included_file_ids = options.included_file_ids
+            run_record.instructions = options.instructions_override
+
+            if options.parent_run_id:
+                try:
+                    run_record.parent_run_id = UUID(options.parent_run_id)
+                except ValueError:
+                    run_record.parent_run_id = None
+            else:
+                run_record.parent_run_id = None
 
     # ------------------------------------------------------------------
     # Worker
@@ -195,38 +221,9 @@ class JobRegistry:
                     step_ids[step] = step_id
                 self._finish_run_step(step_id, "failed", detail)
 
-        with get_session() as session:
-            run_record = models.Run(
-                id=job.id,
-                project_id=job.project_id,
-                mode=options.run_mode,
-                research_mode=options.research_mode,
-                status=JobState.PENDING,
-                params=options.to_dict(),
-                included_file_ids=options.included_file_ids,
-                instructions=options.instructions_override,
-            )
-            if options.parent_run_id:
-                try:
-                    run_record.parent_run_id = UUID(options.parent_run_id)
-                except ValueError:
-                    pass
-            session.add(run_record)
-
-        if options.instructions_override:
-            instructions_path = paths.input_dir / "instructions.txt"
-            try:
-                instructions_path.write_text(options.instructions_override, encoding="utf-8")
-                payload = options.instructions_override.encode("utf-8")
-                if self._use_remote_storage:
-                    key = self._storage_key(job.project_id, f"input/{instructions_path.name}")
-                    self._storage.put_bytes(key, payload, "text/plain")
-                self._record_input_file(job.project_id, instructions_path, "text/plain")
-            except Exception as exc:
-                self._mark_failed(job, f"Failed to write instructions: {exc}")
-                self._update_run(job.id, status=JobState.FAILED, error=str(exc))
-                return
-
+        # Instructions are now passed directly as a parameter to generate()
+        # No need to write instructions.txt file
+        
         self._mark_running(job)
         self._update_run(job.id, status=JobState.RUNNING, started_at=datetime.utcnow())
 
@@ -241,7 +238,6 @@ class JobRegistry:
                 result_path = self._run_quick_regen(job, options, generator, paths, step_callback)
             else:
                 result_path = generator.generate(
-                    save_intermediate=options.save_intermediate,
                     interactive=options.interactive,
                     project_identifier=options.project_identifier,
                     smart_ingest=True,
@@ -249,9 +245,9 @@ class JobRegistry:
                     date_override=None,
                     research_mode=options.research_mode,
                     run_mode=options.run_mode,
-                    force_resummarize=options.force_resummarize,
                     step_callback=step_callback,
                     allow_web_search=options.enable_web_search,
+                    instructions=options.instructions_override,
                 )
             result_rel = self._relative_to_project(paths.root, result_path)
             if self._use_remote_storage and result_rel:
@@ -427,7 +423,7 @@ class JobRegistry:
         if context_pack_path.exists():
             entries.append(("context_pack", context_pack_path, {"type": "json"}))
 
-        variables_path = paths.output_dir / "extracted_variables.json"
+        variables_path = paths.outputs_dir / "extracted_variables.json"
         if variables_path.exists():
             entries.append(("variables", variables_path, {"type": "json"}))
 
@@ -565,13 +561,29 @@ class JobRegistry:
         for record in files:
             target = paths.root / record.path
             target.parent.mkdir(parents=True, exist_ok=True)
-            key = self._storage_key(project_id, record.path)
-            try:
-                self._storage.download_to_path(key, target)
-            except FileNotFoundError:
-                warnings.append(f"Missing in storage: {record.path}")
-            except Exception as exc:
-                errors.append(f"Failed to download '{record.path}': {exc}")
+            
+            # Check if we should use summary instead of native file
+            if record.use_summary_for_generation and record.is_summarized and record.summary_text:
+                # Write summary text to a .summary.txt file instead of downloading native file
+                summary_target = target.parent / f"{target.name}.summary.txt"
+                try:
+                    summary_target.write_text(record.summary_text, encoding="utf-8")
+                    LOGGER.info(
+                        "Using summary for %s (saved to %s)",
+                        record.filename,
+                        summary_target.name,
+                    )
+                except Exception as exc:
+                    errors.append(f"Failed to write summary for '{record.filename}': {exc}")
+            else:
+                # Download native file from storage
+                key = self._storage_key(project_id, record.path)
+                try:
+                    self._storage.download_to_path(key, target)
+                except FileNotFoundError:
+                    warnings.append(f"Missing in storage: {record.path}")
+                except Exception as exc:
+                    errors.append(f"Failed to download '{record.path}': {exc}")
         return errors, warnings
 
     def _clear_directory(self, path: Path) -> None:

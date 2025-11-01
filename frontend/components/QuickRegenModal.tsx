@@ -25,11 +25,6 @@ export function QuickRegenModal({ projectId, run, onClose, onCreated }: QuickReg
     const value = params.enable_vector_store;
     return typeof value === "boolean" ? value : true;
   });
-  const [saveIntermediate, setSaveIntermediate] = useState<boolean>(() => {
-    const params = (run.params ?? {}) as Record<string, unknown>;
-    const value = params.save_intermediate;
-    return typeof value === "boolean" ? value : true;
-  });
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,8 +44,6 @@ export function QuickRegenModal({ projectId, run, onClose, onCreated }: QuickReg
       parent_run_id: run.id,
       run_mode: "fast",
       research_mode: typeof params.research_mode === "string" ? (params.research_mode as string) : run.research_mode,
-      force_resummarize: false,
-      save_intermediate: saveIntermediate,
       instructions: run.instructions ?? undefined,
       enable_vector_store: vectorStoreEnabled,
       enable_web_search: typeof params.enable_web_search === "boolean" ? (params.enable_web_search as boolean) : true,
@@ -130,19 +123,6 @@ export function QuickRegenModal({ projectId, run, onClose, onCreated }: QuickReg
             >
               <option value="enabled">Enabled</option>
               <option value="disabled">Disabled</option>
-            </select>
-          </div>
-
-          <div className="form-field">
-            <label htmlFor="quick-regenerate-save">Save intermediate variables</label>
-            <select
-              id="quick-regenerate-save"
-              name="save_intermediate"
-              value={saveIntermediate ? "yes" : "no"}
-              onChange={(event) => setSaveIntermediate(event.target.value === "yes")}
-            >
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
             </select>
           </div>
 

@@ -94,11 +94,19 @@ class ClaudeExtractor:
                 # Check for web search tool usage and print results
                 self._print_web_search_usage(response)
                 
-                response_text = response.content[0].text
+                # Extract text from response - handle multiple content blocks
+                response_text = self._extract_text_from_response(response)
+                if not response_text:
+                    raise ValueError("No text content found in Claude response")
+                
                 variables = self._parse_response(response_text)
                 print("[OK] Variable extraction complete")
                 return variables
             except Exception as e:
+                # Log the actual response for debugging
+                if 'response_text' in locals():
+                    print(f"[DEBUG] Claude response (first 500 chars): {response_text[:500]}")
+                    print(f"[DEBUG] Response length: {len(response_text)} chars")
                 enc = sys.stdout.encoding or 'utf-8'
                 msg = str(e).encode(enc, errors='ignore').decode(enc)
                 if 'rate_limit' in msg or '429' in msg:
@@ -211,7 +219,11 @@ class ClaudeExtractor:
                 # Check for web search tool usage and print results
                 self._print_web_search_usage(response)
                 
-                response_text = response.content[0].text
+                # Extract text from response - handle multiple content blocks
+                response_text = self._extract_text_from_response(response)
+                if not response_text:
+                    raise ValueError("No text content found in Claude response")
+                
                 variables = self._parse_response(response_text)
                 print("[OK] Variable extraction complete")
                 return variables, response_text
@@ -323,10 +335,17 @@ INSTRUCTIONS:
 6. Ensure all required fields have values
 7. Return the results as a valid JSON object
 
+JSON FORMATTING REQUIREMENTS:
+- All string values must have properly escaped quotes and newlines
+- Use \\n for newlines within strings, not literal newlines
+- Ensure all strings are properly terminated with closing quotes
+- Validate that all brackets and braces are properly closed
+- Do not truncate the JSON - ensure it is complete and valid
+
 ASSUMPTIONS:
 1. The development labor rate is fixed at $200/hour. When interpreting or calculating development-related costs, use $200/hr unless explicit, contradictory pricing is stated in the documents.
 
-Your response should be ONLY a JSON object with the extracted variables. Do not include any explanations or additional text."""
+Your response should be ONLY a valid, complete JSON object with the extracted variables. Do not include any explanations or additional text before or after the JSON."""
     
     def _build_message_content(
         self,
@@ -348,12 +367,25 @@ Your response should be ONLY a JSON object with the extracted variables. Do not 
                 lines.append(f"- {fname}: {note}")
             context_section = "\n" + "\n".join(lines) + "\n"
 
-        prompt = (
-            (context_section if context_section else "")
-            + "\nHere are the documents to analyze:\n\n"
-            + combined_documents
-            + "\n\nPlease extract all variables from these documents according to the schema and style guide provided in the system prompt."
+        # Build prompt - note that binary files (PDFs, images) are attached separately
+        prompt_parts = []
+        if context_section:
+            prompt_parts.append(context_section)
+        
+        if attachments:
+            prompt_parts.append(
+                f"\n{len(attachments)} document(s)/image(s) are attached above as native files for your analysis."
+            )
+        
+        if combined_documents and combined_documents.strip():
+            prompt_parts.append("\nAdditional context and text documents:\n\n")
+            prompt_parts.append(combined_documents)
+        
+        prompt_parts.append(
+            "\n\nPlease extract all variables from the provided documents (both attached files and text content) according to the schema and style guide provided in the system prompt."
         )
+        
+        prompt = "".join(prompt_parts)
 
         if include_debug_note:
             prompt += "\n\nReturn ONLY a valid JSON object with no extra text."
@@ -523,13 +555,30 @@ INSTRUCTIONS:
                     except Exception:
                         pass  # Silently skip if parsing fails
     
+    def _extract_text_from_response(self, response: Any) -> str:
+        """Extract text content from Claude response, handling multiple content blocks."""
+        if not hasattr(response, 'content'):
+            return ""
+        
+        # Collect all text blocks from the response
+        text_parts = []
+        for block in response.content:
+            if hasattr(block, 'type') and block.type == 'text':
+                if hasattr(block, 'text'):
+                    text_parts.append(block.text)
+        
+        return "\n".join(text_parts)
+    
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """Parse Claude's response into a dictionary with robust fallbacks."""
         text = response_text.strip()
 
         # 1) Fast path: strict JSON
         if text.startswith('{') and text.endswith('}'):
-            return json.loads(text)
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass  # Fall through to other methods
 
         # 2) JSON fenced block ```json ... ```
         fence_start = text.find("```json")
@@ -539,13 +588,32 @@ INSTRUCTIONS:
             if fence_end != -1:
                 fenced = text[fence_start:fence_end].strip()
                 if fenced.startswith('{'):
-                    return json.loads(fenced)
+                    try:
+                        return json.loads(fenced)
+                    except json.JSONDecodeError as e:
+                        print(f"[WARN] JSON parse error in fenced block: {e}")
+                        # Try to extract and show the problematic area
+                        if hasattr(e, 'pos'):
+                            start = max(0, e.pos - 100)
+                            end = min(len(fenced), e.pos + 100)
+                            print(f"[DEBUG] Context around error: ...{fenced[start:end]}...")
+                        raise
 
         # 3) Last resort: slice between first '{' and last '}'
         start_idx = text.find('{')
         end_idx = text.rfind('}') + 1
         if start_idx != -1 and end_idx > start_idx:
-            return json.loads(text[start_idx:end_idx])
+            try:
+                return json.loads(text[start_idx:end_idx])
+            except json.JSONDecodeError as e:
+                print(f"[WARN] JSON parse error: {e}")
+                extracted = text[start_idx:end_idx]
+                # Try to show context around the error
+                if hasattr(e, 'pos'):
+                    err_start = max(0, e.pos - 100)
+                    err_end = min(len(extracted), e.pos + 100)
+                    print(f"[DEBUG] Context around error: ...{extracted[err_start:err_end]}...")
+                raise
 
         raise ValueError("No JSON object found in response")
 

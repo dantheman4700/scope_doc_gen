@@ -26,8 +26,6 @@ from .config import (
 from .ingest import DocumentIngester
 from .llm import ClaudeExtractor
 from .renderer import TemplateRenderer
-from .summarizer import FileSummarizer
-from .aggregate import aggregate_summaries
 from .history_retrieval import HistoryRetriever
 from .research import ResearchManager, ResearchMode
 
@@ -81,8 +79,6 @@ class ScopeDocGenerator:
         self.ingester = DocumentIngester()
         self.extractor = ClaudeExtractor()
         self.renderer = TemplateRenderer(TEMPLATE_PATH)
-        summaries_cache_root = self.cache_dir / "summaries"
-        self.summarizer = FileSummarizer(self.extractor, cache_root=summaries_cache_root)
         self.history_retriever = history_retriever
         
         # Load schemas
@@ -168,7 +164,6 @@ class ScopeDocGenerator:
     
     def generate(
         self,
-        save_intermediate: bool = True,
         interactive: bool = False,
         project_identifier: str = None,
         smart_ingest: bool = True,
@@ -176,15 +171,14 @@ class ScopeDocGenerator:
         date_override: Optional[str] = None,
         research_mode: str = "quick",
         run_mode: str = "full",
-        force_resummarize: bool = False,
         step_callback: Optional[StepCallback] = None,
         allow_web_search: bool = True,
+        instructions: Optional[str] = None,
     ) -> str:
         """
         Generate a scope document from input documents.
         
         Args:
-            save_intermediate: Whether to save intermediate extracted variables
             interactive: Whether to allow interactive refinement
             
         Returns:
@@ -198,7 +192,7 @@ class ScopeDocGenerator:
         if run_mode_normalized not in {"fast", "full"}:
             print(f"[WARN] Unknown run mode '{run_mode}', defaulting to 'full'")
             run_mode_normalized = "full"
-        fast_mode_requested = run_mode_normalized == "fast" and not force_resummarize
+        fast_mode_requested = run_mode_normalized == "fast"
 
         def notify(step: str, event: str, detail: Optional[str] = None) -> None:
             if step_callback is None:
@@ -227,13 +221,8 @@ class ScopeDocGenerator:
 
         print(f"\n[OK] Found {len(documents)} document(s)")
 
-        instructions_doc = None
-        analysis_docs: List[dict] = []
-        for d in documents:
-            if d['filename'].lower() == 'instructions.txt':
-                instructions_doc = d
-                continue
-            analysis_docs.append(d)
+        # All documents are analysis docs (no special handling for instructions.txt)
+        analysis_docs = documents
 
         for d in analysis_docs:
             size_info = d.get('size_bytes')
@@ -247,9 +236,6 @@ class ScopeDocGenerator:
             if d.get('page_count'):
                 meta_parts.append(f"{d['page_count']} pages")
             print(f"   - {d['filename']} ({', '.join(meta_parts)})")
-
-        if instructions_doc:
-            print("   - instructions.txt (used for guidance only; excluded from summarization)")
         
         # Step 2: Combine documents
         combined = self.ingester.combine_documents(analysis_docs)
@@ -269,22 +255,6 @@ class ScopeDocGenerator:
             except Exception as e:
                 print(f"[WARN] Could not load context notes from {context_notes_path}: {e}")
 
-        # Load casual instructions from instructions.txt (no flags required)
-        try:
-            project_focus2, file_notes2 = self._load_instructions_file([d['filename'] for d in documents])
-            if project_focus2:
-                if file_context is None:
-                    file_context = {}
-                file_context["PROJECT_FOCUS"] = project_focus2
-                print(f"[OK] Loaded project focus from instructions.txt: {project_focus2}")
-            if file_notes2:
-                if file_context is None:
-                    file_context = {}
-                file_context.update(file_notes2)
-                print(f"[OK] Loaded {len(file_notes2)} file note(s) from instructions.txt")
-        except Exception as e:
-            print(f"[WARN] Could not parse instructions.txt: {e}")
-        
         # If a project identifier is provided, add it as guidance (no pre-filtering)
         if project_identifier:
             if file_context is None:
@@ -310,44 +280,25 @@ class ScopeDocGenerator:
         project_focus_hint = file_context.get("PROJECT_FOCUS") if file_context else None
 
         context_pack = None
-        summaries: List[dict] = []
 
-        fast_mode_active = False
-        notify("summarize", "started", "fast" if fast_mode_requested else None)
+        notify("prepare_context", "started", "fast" if fast_mode_requested else None)
         if fast_mode_requested:
             context_pack = self._load_cached_context_pack()
             if context_pack is not None:
-                fast_mode_active = True
                 print("[OK] Loaded existing context pack for fast mode")
-                notify("summarize", "completed", "Reused cached context pack")
+                notify("prepare_context", "completed", "Reused cached context pack")
             else:
-                print("[WARN] No cached context pack found; running full summarization instead")
-
-        if not fast_mode_active:
-            print("\n" + "="*80)
-            print("SUMMARIZING FILES")
-            print("="*80)
-            try:
-                summaries = []
-                for d in analysis_docs:
-                    fname = d['filename']
-                    note = file_notes.get(fname)
-                    fs = self.summarizer.summarize_document(
-                        document=d,
-                        project_focus=project_focus_hint,
-                        file_note=note,
-                    )
-                    summaries.append(fs.summary)
-                    print(f"[OK] Summarized: {fname}")
-            except Exception as summarize_exc:
-                notify("summarize", "failed", str(summarize_exc))
-                raise
-
-            context_pack = aggregate_summaries(summaries)
-            notify("summarize", "completed", f"{len(summaries)} summary file(s)")
+                print("[WARN] No cached context pack found; rebuilding context from source documents")
 
         if context_pack is None:
-            notify("summarize", "failed", "Context pack unavailable")
+            print("\n" + "="*80)
+            print("PREPARING CONTEXT FROM SOURCE DOCUMENTS")
+            print("="*80)
+            context_pack = self._build_context_pack(analysis_docs, file_notes)
+            notify("prepare_context", "completed", f"{len(analysis_docs)} document(s)")
+
+        if context_pack is None:
+            notify("prepare_context", "failed", "Context pack unavailable")
             print("[ERROR] Unable to prepare context pack; aborting run")
             return None
 
@@ -391,10 +342,17 @@ class ScopeDocGenerator:
             analysis_docs,
             context_pack,
             max_quotes_per_file=5,
-            instructions_doc=instructions_doc,
+            instructions=instructions,
             reference_block=reference_block,
             research_findings=research_findings,
         )
+
+        input_size = len(compact_input)
+        if input_size > 120_000:
+            print(
+                f"[WARN] Claude extraction payload is very large ({input_size:,} characters). "
+                "Consider reducing document size or summarizing additional files to avoid malformed responses."
+            )
 
         use_web_search = (
             allow_web_search
@@ -431,7 +389,14 @@ class ScopeDocGenerator:
                     use_web_search=use_web_search,
                 )
         except Exception as extract_exc:
-            notify("extract", "failed", str(extract_exc))
+            detail = str(extract_exc)
+            notify("extract", "failed", detail)
+            print("[ERROR] Variable extraction failed:", detail)
+            if "No JSON object found" in detail:
+                print(
+                    "[HINT] Claude returned malformed JSON. "
+                    "Large inputs or unexpected model output can cause this. Check logs and consider minimizing the prompt."
+                )
             raise
 
         notify("extract", "completed", None)
@@ -442,8 +407,7 @@ class ScopeDocGenerator:
         except Exception:
             pass
         
-        # Save intermediate results
-        if save_intermediate:
+        # Persist extracted variables for downstream use
             intermediate_path = self.output_dir / "extracted_variables.json"
             with open(intermediate_path, 'w', encoding='utf-8') as f:
                 json.dump(variables, f, indent=2)
@@ -551,14 +515,17 @@ class ScopeDocGenerator:
         documents,
         context_pack: dict,
         max_quotes_per_file: int = 5,
-        instructions_doc: Optional[dict] = None,
+        instructions: Optional[str] = None,
         reference_block: Optional[str] = None,
         research_findings: Optional[List] = None,
     ) -> str:
         """Construct a compact input payload for extraction.
 
-        Includes instructions.txt content if present, the aggregated context pack,
+        Includes instructions if provided, the aggregated context pack,
         and a limited number of evidence quotes per file to reduce token load.
+        
+        Note: This only includes TEXT content. Binary files (PDFs, images) that are
+        natively uploaded are NOT included here - they're sent as attachments.
         """
         parts = []
 
@@ -573,9 +540,9 @@ class ScopeDocGenerator:
             "- In the final document, add an 'Appendix - External References' section with bullet points: Title – URL, summarizing the key insight from each researched source."
         )
 
-        # Include instructions.txt raw content verbatim if present
-        if instructions_doc:
-            parts.append("INSTRUCTIONS.TXT:\n" + instructions_doc['content'].strip())
+        # Include instructions if provided
+        if instructions and instructions.strip():
+            parts.append("INSTRUCTIONS:\n" + instructions.strip())
 
         # Include compact context pack
         parts.append("CONTEXT_PACK:\n" + json.dumps(context_pack, indent=2))
@@ -607,7 +574,57 @@ class ScopeDocGenerator:
                 approx = q.get('approx_location', '')
                 parts.append(f"  * \"{quote}\" (why: {rationale}; where: {approx})")
 
+        # Only include TEXT-based documents here (not native attachments like PDFs/images)
+        # Native attachments are sent separately as binary content blocks
+        text_docs = [
+            doc for doc in documents
+            if doc.get('upload_via') not in ('attachment', 'skipped')
+        ]
+        
+        if text_docs:
+            parts.append("DOCUMENTS_FULL_TEXT:")
+            for doc in text_docs:
+                content = doc.get('content')
+                if not content:
+                    continue
+                metadata = doc.get('metadata') or {}
+                filename = metadata.get('original_filename') or doc.get('filename', 'unknown')
+                parts.append(f"--- {filename} ---")
+                parts.append(content.strip())
+
         return "\n\n".join(parts)
+
+    def _build_context_pack(self, documents: List[dict], file_notes: Optional[Dict[str, str]] = None) -> dict:
+        """Build a lightweight context pack from ingested documents without re-summarizing."""
+
+        context_pack: Dict[str, List] = {
+            "documents": [],
+            "pain_points": [],
+            "risks": [],
+            "effort_multipliers": [],
+            "integration_notes": [],
+            "unknowns": [],
+            "must_read_sections": [],
+            "evidence_quotes": [],
+        }
+
+        for doc in documents:
+            metadata = doc.get('metadata') or {}
+            original_filename = metadata.get("original_filename", doc.get("filename"))
+            context_pack["documents"].append(
+                {
+                    "filename": doc.get("filename"),
+                    "path": doc.get("path"),
+                    "source_type": doc.get("source_type"),
+                    "media_type": doc.get("media_type"),
+                    "size_bytes": doc.get("size_bytes"),
+                    "summary_mode": bool(metadata.get("summary_mode")),
+                    "original_filename": original_filename,
+                    "note": (file_notes or {}).get(original_filename),
+                }
+            )
+
+        return context_pack
 
     def _collect_attachments(self, documents: List[Dict]) -> List[Dict[str, str]]:
         attachments: List[Dict[str, str]] = []
@@ -696,11 +713,6 @@ def main():
         help="Path to JSON mapping of { filename: context_note } for per-file guidance"
     )
     parser.add_argument(
-        '--no-save-intermediate',
-        action='store_true',
-        help="Don't save intermediate extracted variables"
-    )
-    parser.add_argument(
         '--debug',
         action='store_true',
         help="Enable debug logging and save raw LLM output"
@@ -735,12 +747,7 @@ def main():
         type=str,
         choices=['full', 'fast'],
         default='full',
-        help="Run mode: 'full' performs summarization; 'fast' reuses cached context when available",
-    )
-    parser.add_argument(
-        '--force-resummarize',
-        action='store_true',
-        help="Force summarization even when running in fast mode",
+        help="Run mode: 'full' rebuilds context from source documents; 'fast' reuses cached context when available",
     )
     parser.add_argument(
         '--research-mode',
@@ -792,7 +799,6 @@ def main():
             generator.generate_from_variables(args.from_variables)
         else:
             generator.generate(
-                save_intermediate=not args.no_save_intermediate,
                 interactive=args.interactive,
                 project_identifier=args.project,
                 smart_ingest=not args.no_smart_ingest,
@@ -800,7 +806,6 @@ def main():
                 date_override=args.date,
                 research_mode=args.research_mode,
                 run_mode=args.mode,
-                force_resummarize=args.force_resummarize,
                 allow_web_search=ENABLE_WEB_RESEARCH,
             )
     

@@ -16,10 +16,12 @@ export interface ProjectFile {
   created_at: string;
   path: string;
   token_count: number;
+  native_token_count: number;
   is_summarized: boolean;
   summary_text?: string | null;
   is_too_large: boolean;
   pdf_page_count?: number | null;
+  use_summary_for_generation: boolean;
 }
 
 export interface RunSummary {

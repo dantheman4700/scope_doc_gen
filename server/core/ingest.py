@@ -94,16 +94,24 @@ class DocumentIngester:
                 return self._process_pdf(file_path)
             elif suffix in ['.txt', '.md']:
                 content = self._read_text(file_path)
+                is_summary = file_path.name.endswith('.summary.txt')
+                source_type = 'summary' if is_summary else 'text'
+                upload_via = 'summary' if is_summary else 'text'
+                original_filename = file_path.name[:-len('.summary.txt')] if is_summary else file_path.name
                 return {
                     'filename': file_path.name,
                     'content': content,
                     'path': str(file_path),
                     'media_type': mimetypes.guess_type(file_path.name)[0] or 'text/plain',
-                    'source_type': 'text',
+                    'source_type': source_type,
                     'size_bytes': file_path.stat().st_size,
-                    'upload_via': 'text',
+                    'upload_via': upload_via,
                     'can_upload': False,
                     'content_hash': self._hash_text(content),
+                    'metadata': {
+                        'original_filename': original_filename,
+                        'summary_mode': is_summary,
+                    }
                 }
             elif suffix == '.vtt':
                 content = self._read_vtt(file_path)
