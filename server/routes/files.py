@@ -30,6 +30,7 @@ from ..services.token_counter import (
     TokenCountingError,
     count_tokens_for_blocks,
     make_document_block,
+    make_image_block,
     make_text_block,
 )
 
@@ -39,6 +40,7 @@ router = APIRouter(prefix="/projects/{project_id}/files", tags=["files"])
 LOGGER = logging.getLogger(__name__)
 
 TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".vtt"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff"}
 
 _DOCUMENT_INGESTER = DocumentIngester()
 _FILE_SUMMARIZER: Optional[FileSummarizer] = None
@@ -67,7 +69,15 @@ async def _analyze_uploaded_file(
     media_type: Optional[str],
     contents: bytes,
 ) -> Dict[str, object]:
-    normalized_media_type = media_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    normalized_media_type = media_type or ""
+    if normalized_media_type.lower() in {"application/octet-stream", "binary/octet-stream"}:
+        normalized_media_type = ""
+
+    normalized_media_type = (
+        normalized_media_type
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
     suffix = Path(filename).suffix.lower()
 
     pdf_page_count = None
@@ -132,7 +142,11 @@ def _build_token_blocks(
             return []
         return [make_text_block(text)]
 
-    return [make_document_block(data=contents, media_type=media_type, filename=filename)]
+    if _treat_as_image(media_type, suffix):
+        return [make_image_block(data=contents, media_type=media_type)]
+
+    normalized_media_type = _normalize_document_media_type(media_type, suffix)
+    return [make_document_block(data=contents, media_type=normalized_media_type, filename=filename)]
 
 
 def _treat_as_text(media_type: str, suffix: str) -> bool:
@@ -143,6 +157,20 @@ def _treat_as_text(media_type: str, suffix: str) -> bool:
     if media_type in {"application/json", "application/xml"}:
         return True
     return False
+
+
+def _treat_as_image(media_type: str, suffix: str) -> bool:
+    if media_type.startswith("image/"):
+        return True
+    if suffix in IMAGE_EXTENSIONS:
+        return True
+    return False
+
+
+def _normalize_document_media_type(media_type: str, suffix: str) -> str:
+    if suffix == ".pdf" or media_type in {"application/pdf", "application/x-pdf"}:
+        return "application/pdf"
+    return media_type
 
 
 def _decode_text(contents: bytes) -> str:

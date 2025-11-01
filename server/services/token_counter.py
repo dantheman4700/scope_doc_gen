@@ -33,10 +33,15 @@ def make_document_block(
     media_type: str,
     filename: str | None = None,
 ) -> Mapping[str, object]:
-    """Create a token counting block for a binary document."""
+    """Create a token counting block for a binary document.
+    
+    Note: The 'name' field is NOT included because the token counting API
+    does not accept it (returns 400 error). The filename parameter is kept
+    for API compatibility but is not used in the token counting context.
+    """
 
     encoded = base64.b64encode(data).decode("ascii")
-    block: dict[str, object] = {
+    return {
         "type": "document",
         "source": {
             "type": "base64",
@@ -44,9 +49,20 @@ def make_document_block(
             "data": encoded,
         },
     }
-    if filename:
-        block["name"] = filename
-    return block
+
+
+def make_image_block(*, data: bytes, media_type: str) -> Mapping[str, object]:
+    """Create a token counting block for an image."""
+
+    encoded = base64.b64encode(data).decode("ascii")
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": encoded,
+        },
+    }
 
 
 async def count_tokens_for_blocks(blocks: Iterable[Mapping[str, object]]) -> int:
