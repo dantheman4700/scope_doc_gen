@@ -44,9 +44,13 @@ def _env_list(name: str) -> List[str]:
     return unique
 
 
-TEMPLATE_PATH = PROJECT_ROOT / "template_scope.md"
-VARIABLES_SCHEMA_PATH = PROJECT_ROOT / "temp_var_schema.json"
-VARIABLES_GUIDE_PATH = PROJECT_ROOT / "variables.json"
+# Keep resources with the backend to ensure deployment scripts sync them
+RESOURCES_DIR = Path(__file__).resolve().parents[1] / "resources"
+
+# Allow environment overrides while defaulting to backend-local resources
+TEMPLATE_PATH = _resolve_path("TEMPLATE_PATH", RESOURCES_DIR / "template_scope.md")
+VARIABLES_SCHEMA_PATH = _resolve_path("VARIABLES_SCHEMA_PATH", RESOURCES_DIR / "temp_var_schema.json")
+VARIABLES_GUIDE_PATH = _resolve_path("VARIABLES_GUIDE_PATH", RESOURCES_DIR / "variables.json")
 
 # Provider selection helpers
 def _env_choice(name: str, default: str, allowed: Tuple[str, ...]) -> str:

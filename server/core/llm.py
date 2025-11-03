@@ -329,11 +329,18 @@ VARIABLES STYLE GUIDE:
 INSTRUCTIONS:
 1. Carefully read all provided documents
 2. Extract information for each variable defined in the schema
-3. Follow the style guidelines exactly for each variable
-4. For array variables, format them according to the markdown style specified
-5. If information is not available in the documents, make reasonable inferences based on context or use "TBD" for missing critical information
-6. Ensure all required fields have values
-7. Return the results as a valid JSON object
+3. Follow the style guidelines for content and tone, but DO NOT include markdown formatting syntax (like **bold** or *italic*) in your JSON values
+4. Return plain text values - the template will handle all markdown formatting
+5. For array variables, return simple string values without markdown prefixes (no '* ' bullets)
+6. If information is not available in the documents, make reasonable inferences based on context or use "TBD" for missing critical information
+7. Ensure all required fields have values
+8. Prefer brevity and skimmability. When a style says "top N" or "2–4 lines", adhere strictly.
+9. When listing services/tech stack/integration points, ONLY include services with publicly documented APIs or automation methods. If uncertain, USE the web_search tool to verify official documentation. If still uncertain after searching, mark the item as "TBD – verify availability" and avoid inventing APIs (e.g., do not claim an "iCloud API"; prefer the correct product name like "Apple CloudKit REST" if verified).
+10. Risks: limit to 3–5 bullets; generalize repeated themes (e.g., combine API rate limits into a single generic risk). Do NOT include provider-specific rate numbers.
+11. Timeline & Milestones: provide one line per phase in the form "Phase – short description: X weeks". Do NOT write as a paragraph. If hours breakdown is relevant, include it here per phase (not in Setup Costs). Avoid parentheses.
+12. Setup Costs (dev/training/PM hours): provide totals only in the form "X hours". No parentheses or breakdowns; details live in Timeline & Milestones.
+13. Subscription/Licensing: avoid outdated model names like "gpt-4". Prefer current product names or generic phrasing like "AI API usage".
+14. Return the results as a valid JSON object
 
 JSON FORMATTING REQUIREMENTS:
 - All string values must have properly escaped quotes and newlines

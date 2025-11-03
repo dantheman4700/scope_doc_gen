@@ -16,7 +16,7 @@
       "name": "project_summary",
       "type": "string",
       "description": "Two to three sentence summary of the project and its objectives",
-      "style": "Concise paragraph format, 2-3 sentences. Use **bold** for key technologies, metrics, and important outcomes."
+      "style": "Concise paragraph format, 2-3 sentences. Emphasize key technologies, metrics, and important outcomes."
     },
     {
       "name": "date_created",
@@ -28,40 +28,37 @@
       "name": "stakeholders",
       "type": "array",
       "description": "List of client representatives and internal team leads involved in the project",
-      "style": "Each item: 'Name - Position' (e.g., 'John Smith - CEO', 'Sarah Johnson - Operations Manager')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: 'Name - Position' (e.g., 'John Smith - CEO', 'Sarah Johnson - Operations Manager')"
     },
     {
       "name": "process_mapping_description",
       "type": "string",
       "description": "Description of the current manual process or system being used",
-      "style": "Concise paragraph. Use **bold** for key steps, roles, tools, and time estimates. Avoid verbose explanations."
+      "style": "Concise paragraph. Emphasize key steps, roles, tools, and time estimates. Avoid verbose explanations."
     },
     {
       "name": "time_effort_cost",
       "type": "string",
       "description": "Time, effort, and cost currently involved in the manual process",
-      "style": "Concise description with **bold** for specific numbers (hours, costs, FTEs). Focus on quantifiable metrics."
+      "style": "Concise description emphasizing specific numbers (hours, costs, FTEs). Focus on quantifiable metrics."
     },
     {
       "name": "pain_points",
       "type": "array",
       "description": "Key inefficiencies, bottlenecks, or challenges identified in the current process",
-      "style": "Each item: Brief description of a specific pain point (e.g., 'Manual data entry takes 10+ hours weekly', 'High error rate in calculations')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Top 3–5 items only. Each item: brief, specific pain point (e.g., 'Manual data entry takes 10+ hours weekly'). Avoid redundancy."
     },
     {
       "name": "existing_tools_systems",
       "type": "array",
       "description": "List of tools, software, or platforms currently used",
-      "style": "Each item: Tool/platform name with brief context (e.g., 'Salesforce CRM', 'Excel spreadsheets for tracking', 'Gmail for communication')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Tool/platform name with brief context (e.g., 'Salesforce CRM', 'Excel spreadsheets for tracking', 'Gmail for communication')"
     },
     {
       "name": "automation_scope",
       "type": "string",
       "description": "Processes or workflows targeted for automation",
-      "style": "Concise paragraph. Use **bold** for specific features, systems, and key capabilities. Focus on what's being automated and why."
+      "style": "Concise paragraph. Emphasize specific features, systems, and key capabilities. Focus on what's being automated and why."
     },
     {
       "name": "high_level_workflow",
@@ -73,68 +70,61 @@
       "name": "tech_stack",
       "type": "array",
       "description": "Tools and platforms involved in the automation solution",
-      "style": "Each item: **Tool/platform name** - Brief purpose. Be concise. Format: '**Name** - Purpose'",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Tool/platform name - Brief purpose. Be concise. Format: 'Name - Purpose'"
     },
     {
       "name": "data_sources",
       "type": "array",
       "description": "All inputs for the automation",
-      "style": "Each item: Source name/type (e.g., 'Client CRM database', 'Web forms', 'Email attachments', 'API endpoints')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Source name/type (e.g., 'Client CRM database', 'Web forms', 'Email attachments', 'API endpoints')"
     },
     {
       "name": "automation_outputs",
       "type": "array",
       "description": "What the automation delivers",
-      "style": "Each item: Output type/format (e.g., 'Automated email responses', 'Generated PDF reports', 'Dashboard updates', 'Slack notifications')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Output type/format (e.g., 'Automated email responses', 'Generated PDF reports', 'Dashboard updates', 'Slack notifications')"
     },
     {
       "name": "integration_points",
       "type": "array",
       "description": "List of systems that require integration with the automation",
-      "style": "Each item: System name with integration method (e.g., 'Salesforce via REST API', 'Google Sheets via OAuth', 'Slack via Webhooks')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: System name with integration method (e.g., 'Salesforce via REST API', 'Google Sheets via OAuth', 'Slack via Webhooks')"
     },
     {
       "name": "security_considerations",
       "type": "string",
       "description": "Data protection and compliance requirements for the project",
-      "style": "Concise paragraph. Use **bold** for specific security measures, compliance standards (e.g., **GDPR**, **SOC2**), and key security features."
+      "style": "2–4 short lines. Concrete measures and standards only (e.g., GDPR, SOC 2). Avoid boilerplate and long lists."
     },
     {
       "name": "scalability",
       "type": "string",
       "description": "Assessment of whether the automation can handle increased volumes or additional features",
-      "style": "Concise paragraph. Use **bold** for specific limits, capacity numbers, and scaling thresholds. Focus on concrete capabilities."
+      "style": "2–4 short lines. Include concrete limits/capacities or thresholds. Avoid vague generalities."
     },
     {
       "name": "risks",
       "type": "array",
       "description": "Potential risks and challenges",
-      "style": "Each item: Risk description (e.g., 'API rate limits may affect processing speed', 'Third-party service downtime could disrupt workflow')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Top 3–5 items only. Generalize recurring themes into one bullet (e.g., 'API rate limits may affect throughput'); avoid provider-specific rate numbers."
     },
     {
       "name": "assumptions_requirements",
       "type": "array",
       "description": "Key assumptions and requirements",
-      "style": "Each item: Assumption or requirement statement (e.g., 'Client provides API access within 1 week', 'Data is available in structured format')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "3–6 concise bullets. Each item a single sentence requirement/assumption (e.g., 'Client provides API access within 1 week')."
     },
     {
       "name": "timeline_milestones",
       "type": "string",
-      "description": "Phases with start and end dates",
-      "style": "Concise format with **bold** phase names and clear durations. Use sentence or list format."
+      "description": "Phases with durations and key milestones",
+      "style": "One line per phase: 'Phase – short description: X weeks'. Do not write as a paragraph. No parentheses. If hours breakdown is relevant, include it here per phase, not in Setup Costs."
     },
     {
       "name": "deliverable_checkpoints",
       "type": "array",
       "description": "Weekly deliverable checkpoints showing progress milestones",
-      "style": "Each item: 'Week X: Deliverable description' or 'Week X.X: Deliverable description' (e.g., 'Week 1: API integrations functional', 'Week 2.5: Basic scope generation working')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: 'Week X: Deliverable description' or 'Week X.X: Deliverable description' (e.g., 'Week 1: API integrations functional', 'Week 2.5: Basic scope generation working')"
     },
     {
       "name": "approval_workflow",
@@ -145,65 +135,63 @@
     {
       "name": "dev_hours",
       "type": "string",
-      "description": "Development hours with calculation",
-      "style": "Format with breakdown: '**X hours** @ $Y/hour = **$Z** (Component 1: Xh, Component 2: Yh, etc.)'. Be specific about what tasks are included."
+      "description": "Development hours total",
+      "style": "Format: 'X hours'. No parentheses or breakdown; include breakdown in Timeline & Milestones instead."
     },
     {
       "name": "training_hours",
       "type": "string",
-      "description": "User training/Communication hours",
-      "style": "Format: '**X hours** @ $Y/hour = **$Z**' with brief context"
+      "description": "User training/Communication hours total",
+      "style": "Format: 'X hours'. No parentheses or breakdown."
     },
     {
       "name": "pm_hours",
       "type": "string",
-      "description": "Project Management hours",
-      "style": "Format: '**X hours** @ $Y/hour = **$Z**' with brief context"
+      "description": "Project Management hours total",
+      "style": "Format: 'X hours'. No parentheses or breakdown."
     },
     {
       "name": "subscription_licensing_costs",
       "type": "array",
       "description": "List of subscription and licensing costs for various tools/platforms",
-      "style": "Each item: 'Tool/Platform: Cost/period (notes)' (e.g., 'N8N: ~$20/month', 'AI API (Claude/GPT): ~$50/month (usage-dependent)', 'Google Workspace: Existing (no additional cost)')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: 'Tool/Platform: Cost/period'. Use current product names only; avoid outdated model names (e.g., avoid 'gpt-4'). Prefer generic phrasing like 'AI API usage: ~$X/month (usage-dependent)'. No parentheses explanations."
     },
     {
       "name": "total_setup_cost",
       "type": "string",
       "description": "Total one-time setup cost",
-      "style": "Format: '**$X** (breakdown of components)' - Use bold for the total amount"
+      "style": "Format: '$X'. No parentheses or breakdown here."
     },
     {
       "name": "monthly_operating_cost",
       "type": "string",
       "description": "Total monthly operating cost for subscriptions",
-      "style": "Format: '**~$X** (~$A USD estimate)' - Use bold for the total amount"
+      "style": "Format: '~$X/month'. No parentheses explanations."
     },
     {
       "name": "current_process_cost",
       "type": "array",
       "description": "Breakdown of current process costs including time spent, hourly rates, error correction costs, and total annual cost",
-      "style": "Each item: Cost component with calculation (e.g., 'Employee time: 60 hours/month × 12 months × $50/hour = $36,000/year', 'Error correction: ~$6,000/year', 'Total annual cost: $42,000-$60,000')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Cost component with calculation (e.g., 'Employee time: 60 hours/month × 12 months × $50/hour = $36,000/year', 'Error correction: ~$6,000/year', 'Total annual cost: $42,000-$60,000')"
     },
     {
       "name": "automation_benefits",
       "type": "array",
       "description": "Breakdown of automation benefits including time savings, error reduction, response time improvements, and total annual savings",
-      "style": "Each item: Benefit with value (e.g., 'Time savings: $32,400-$48,600/year (90% reduction)', 'Error reduction: $5,400/year', 'Total annual savings: $42,800-$59,000')",
-      "markdown": "Bullet list with '* ' prefix"
+      "style": "Each item: Benefit with value (e.g., 'Time savings: $32,400-$48,600/year (90% reduction)', 'Error reduction: $5,400/year', 'Total annual savings: $42,800-$59,000')"
     },
     {
       "name": "roi_summary",
       "type": "string",
       "description": "Summary of ROI including percentage in first year and ongoing annual savings",
-      "style": "Use **bold** for key numbers. Format: '**X%** ROI in first year with ongoing savings of **$Y** annually'. Be concise and impactful."
+      "style": "Format: 'X% ROI in first year with ongoing savings of $Y annually'. Be concise and impactful."
     },
     {
       "name": "appendices",
       "type": "string",
       "description": "Any additional documentation or references",
-      "style": "Paragraph or list with links/references (e.g., 'Meeting notes (link), API documentation: https://docs.example.com')"
+      "style": "One reference per line: 'Title – URL'. No run-on sentences. Keep it short."
     }
   ]
 }
+

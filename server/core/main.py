@@ -408,10 +408,10 @@ class ScopeDocGenerator:
             pass
         
         # Persist extracted variables for downstream use
-            intermediate_path = self.output_dir / "extracted_variables.json"
-            with open(intermediate_path, 'w', encoding='utf-8') as f:
-                json.dump(variables, f, indent=2)
-            print(f"[OK] Saved extracted variables to: {intermediate_path}")
+        intermediate_path = self.output_dir / "extracted_variables.json"
+        with open(intermediate_path, 'w', encoding='utf-8') as f:
+            json.dump(variables, f, indent=2)
+        print(f"[OK] Saved extracted variables to: {intermediate_path}")
         
         # Step 4: Interactive refinement (optional)
         if interactive:

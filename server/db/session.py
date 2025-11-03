@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Iterator
+import os
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
@@ -19,7 +20,21 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(DATABASE_DSN, pool_pre_ping=True)
+# Use a conservative connection pool to avoid exhausting Supabase Session pooler.
+# Defaults can be overridden via env vars.
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "1"))
+_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "0"))
+_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "10"))  # seconds to wait for a connection
+_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "300"))  # seconds before recycling a connection
+
+engine = create_engine(
+    DATABASE_DSN,
+    pool_pre_ping=True,
+    pool_size=_POOL_SIZE,
+    max_overflow=_MAX_OVERFLOW,
+    pool_timeout=_POOL_TIMEOUT,
+    pool_recycle=_POOL_RECYCLE,
+)
 
 SessionLocal = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
 

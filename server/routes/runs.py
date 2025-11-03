@@ -106,6 +106,25 @@ def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
     in_code_block = False
     code_buffer: List[str] = []
 
+    def _add_runs_with_emphasis(paragraph, text: str) -> None:
+        # Minimal inline markdown support: **bold**, __bold__, `code`
+        import re
+        parts = re.split(r"(\*\*.+?\*\*|__.+?__|`.+?`)", text)
+        for part in parts:
+            if not part:
+                continue
+            if (part.startswith("**") and part.endswith("**") and len(part) >= 4):
+                run = paragraph.add_run(part[2:-2])
+                run.bold = True
+            elif (part.startswith("__") and part.endswith("__") and len(part) >= 4):
+                run = paragraph.add_run(part[2:-2])
+                run.bold = True
+            elif (part.startswith("`") and part.endswith("`") and len(part) >= 2):
+                # Render inline code as a plain run for now
+                paragraph.add_run(part[1:-1])
+            else:
+                paragraph.add_run(part)
+
     for raw_line in content.splitlines():
         line = raw_line.rstrip("\n")
         stripped = line.strip()
@@ -132,19 +151,24 @@ def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
             level = len(stripped) - len(stripped.lstrip("#"))
             text = stripped[level:].strip()
             level = max(1, min(level, 4))
-            document.add_heading(text or "", level=level)
+            heading_para = document.add_heading("", level=level)
+            _add_runs_with_emphasis(heading_para, text or "")
             continue
 
         if stripped.startswith(('- ', '* ')):
-            document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            bullet_text = stripped[2:].strip()
+            bullet_para = document.add_paragraph(style="List Bullet")
+            _add_runs_with_emphasis(bullet_para, bullet_text)
             continue
 
         if stripped.startswith(">"):
-            paragraph = document.add_paragraph(stripped[1:].strip())
-            paragraph.style = "Intense Quote"
+            quote_para = document.add_paragraph("")
+            quote_para.style = "Intense Quote"
+            _add_runs_with_emphasis(quote_para, stripped[1:].strip())
             continue
 
-        document.add_paragraph(stripped)
+        body_para = document.add_paragraph("")
+        _add_runs_with_emphasis(body_para, stripped)
 
     if code_buffer:
         paragraph = document.add_paragraph("\n".join(code_buffer))
