@@ -335,9 +335,10 @@ INSTRUCTIONS:
 6. If information is not available in the documents, make reasonable inferences based on context or use "TBD" for missing critical information
 7. Ensure all required fields have values
 8. Prefer brevity and skimmability. When a style says "top N" or "2–4 lines", adhere strictly.
+9. Respect array size limits specified in the JSON schema (e.g., maxItems). Do not exceed these limits; if you have more candidates, select the most important and drop the rest.
 9. When listing services/tech stack/integration points, ONLY include services with publicly documented APIs or automation methods. If uncertain, USE the web_search tool to verify official documentation. If still uncertain after searching, mark the item as "TBD – verify availability" and avoid inventing APIs (e.g., do not claim an "iCloud API"; prefer the correct product name like "Apple CloudKit REST" if verified).
 10. Risks: limit to 3–5 bullets; generalize repeated themes (e.g., combine API rate limits into a single generic risk). Do NOT include provider-specific rate numbers.
-11. Timeline & Milestones: provide one line per phase in the form "Phase – short description: X weeks". Do NOT write as a paragraph. If hours breakdown is relevant, include it here per phase (not in Setup Costs). Avoid parentheses.
+11. Timeline & Milestones: provide one line per phase in the form "Phase – short description: X weeks (Y hr)". Include an hours allocation Y for each phase such that the SUM across all phases equals the total hours from dev_hours + training_hours + pm_hours. You may place most/all training and PM hours in the final phase. Use the unit 'hr' in parentheses and do NOT write this section as a paragraph.
 12. Setup Costs (dev/training/PM hours): provide totals only in the form "X hours". No parentheses or breakdowns; details live in Timeline & Milestones.
 13. Subscription/Licensing: avoid outdated model names like "gpt-4". Prefer current product names or generic phrasing like "AI API usage".
 14. Return the results as a valid JSON object

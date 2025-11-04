@@ -42,6 +42,7 @@
       "items": {
         "type": "string"
       },
+      "maxItems": 5,
       "description": "Key inefficiencies, bottlenecks, or challenges"
     },
     "existing_tools_systems": {
@@ -100,6 +101,7 @@
       "items": {
         "type": "string"
       },
+      "maxItems": 5,
       "description": "Potential risks and challenges"
     },
     "assumptions_requirements": {
@@ -107,11 +109,12 @@
       "items": {
         "type": "string"
       },
+      "maxItems": 6,
       "description": "Key assumptions and requirements"
     },
     "timeline_milestones": {
       "type": "string",
-      "description": "Phases with start and end dates"
+      "description": "Timeline phases with duration and per-phase hours allocation. Format each line as: 'Phase – short description: X weeks (Y hr)'. Hours across all phases must sum to dev_hours + training_hours + pm_hours; training and PM hours may be concentrated in the final phase."
     },
     "deliverable_checkpoints": {
       "type": "array",

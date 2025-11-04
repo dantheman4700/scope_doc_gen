@@ -58,7 +58,7 @@
       "name": "automation_scope",
       "type": "string",
       "description": "Processes or workflows targeted for automation",
-      "style": "Concise paragraph. Emphasize specific features, systems, and key capabilities. Focus on what's being automated and why."
+      "style": "Concise paragraph (NO numbered list). Emphasize specific features, systems, and key capabilities. Focus on what's being automated and why. Write as flowing prose without list formatting."
     },
     {
       "name": "high_level_workflow",
@@ -118,7 +118,7 @@
       "name": "timeline_milestones",
       "type": "string",
       "description": "Phases with durations and key milestones",
-      "style": "One line per phase: 'Phase – short description: X weeks'. Do not write as a paragraph. No parentheses. If hours breakdown is relevant, include it here per phase, not in Setup Costs."
+      "style": "One line per phase: 'Phase – short description: X weeks (Y hr)'. Include Y hr per phase. The sum of all Y across phases MUST equal total hours from dev_hours + training_hours + pm_hours. Keep it concise (3–6 lines), not a paragraph."
     },
     {
       "name": "deliverable_checkpoints",

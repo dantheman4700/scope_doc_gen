@@ -122,10 +122,6 @@ class TemplateRenderer:
             else:
                 formatted_items.append(f"* {raw}")
 
-        # Indicate truncation if applied
-        if max_items and len(items) > max_items:
-            formatted_items.append("* …")
-
         return "\n".join(formatted_items)
     
     def _format_dict(self, obj: dict) -> str:
