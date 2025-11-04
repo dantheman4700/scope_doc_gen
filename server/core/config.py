@@ -93,7 +93,9 @@ WEB_SEARCH_ALLOWED_DOMAINS = [d.strip() for d in _allowed_domains.split(",") if 
 
 # Perplexity research configuration
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY") or os.getenv("PERP_API_KEY")
-PERPLEXITY_MODEL = os.getenv("PERPLEXITY_MODEL", "sonar-medium-online")
+# Default to a current, supported Perplexity model
+# Ref: https://docs.perplexity.ai/getting-started/models/models/sonar-pro
+PERPLEXITY_MODEL = os.getenv("PERPLEXITY_MODEL", "sonar-pro")
 PERPLEXITY_BASE_URL = os.getenv("PERPLEXITY_BASE_URL", "https://api.perplexity.ai")
 
 # API Configuration

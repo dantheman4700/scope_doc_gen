@@ -413,6 +413,52 @@ class ScopeDocGenerator:
             json.dump(variables, f, indent=2)
         print(f"[OK] Saved extracted variables to: {intermediate_path}")
         
+        # Optional: Post-extraction verification research (Perplexity FULL mode)
+        # Verifies API/service availability based on extracted tech stack/integrations.
+        post_findings = []
+        if mode is ResearchMode.FULL:
+            try:
+                post_findings = research_manager.gather_post_extraction(variables)
+                if post_findings:
+                    print(f"[OK] Post-extraction research findings: {len(post_findings)}")
+                    # Merge findings into appendices and assumptions (minimally, concisely)
+                    # 1) Appendices: add up to 5 unique references as 'Service API docs – URL'
+                    existing_appendices = (variables.get('appendices') or '').strip()
+                    appendix_lines = [ln.strip() for ln in existing_appendices.splitlines() if ln.strip()]
+                    added = 0
+                    seen_urls = set()
+                    for fnd in post_findings:
+                        for url in fnd.references[:3]:
+                            if added >= 5:
+                                break
+                            if url in seen_urls:
+                                continue
+                            seen_urls.add(url)
+                            appendix_lines.append(f"{fnd.provider.title()} reference – {url}")
+                            added += 1
+                        if added >= 5:
+                            break
+                    if appendix_lines:
+                        variables['appendices'] = "\n".join(appendix_lines)
+
+                    # 2) Assumptions & requirements: ensure access bullets for up to 3 services
+                    ar_list = variables.get('assumptions_requirements') or []
+                    if not isinstance(ar_list, list):
+                        ar_list = []
+                    # Build simple service-access assumptions
+                    svc_names = []
+                    for fnd in post_findings:
+                        name = (fnd.query.split("'", 2)[1] if "'" in fnd.query else None) or None
+                        if name and name not in svc_names:
+                            svc_names.append(name)
+                    for name in svc_names[:3]:
+                        bullet = f"Client provides API access/credentials for {name}"
+                        if bullet not in ar_list and len(ar_list) < 6:
+                            ar_list.append(bullet)
+                    variables['assumptions_requirements'] = ar_list
+            except Exception as post_err:
+                print(f"[WARN] Post-extraction research failed: {post_err}")
+        
         # Step 4: Interactive refinement (optional)
         if interactive:
             variables = self._interactive_refinement(variables)
