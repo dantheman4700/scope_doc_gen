@@ -28,6 +28,7 @@ export default async function ProjectsPage() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Created by</th>
               <th>Last updated</th>
               <th>Description</th>
             </tr>
@@ -35,7 +36,7 @@ export default async function ProjectsPage() {
           <tbody>
             {projects.length === 0 ? (
               <tr>
-                <td colSpan={3}>No projects yet</td>
+                <td colSpan={4}>No projects yet</td>
               </tr>
             ) : (
               projects.map((project) => (
@@ -43,6 +44,7 @@ export default async function ProjectsPage() {
                   <td>
                     <Link href={`/projects/${project.id}`}>{project.name}</Link>
                   </td>
+                  <td>{project.owner?.email ?? "—"}</td>
                   <td>{new Date(project.updated_at).toLocaleString()}</td>
                   <td>{project.description ?? "—"}</td>
                 </tr>

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from server.core.config import DATA_ROOT
 
@@ -28,13 +28,19 @@ class ProjectBase(BaseModel):
 
 
 class ProjectCreateRequest(ProjectBase):
-    pass
+    team_id: Optional[UUID] = None
 
 
 class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
     flags: Optional[dict] = None
+
+
+class UserSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    email: str
 
 
 class ProjectResponse(BaseModel):
@@ -44,22 +50,43 @@ class ProjectResponse(BaseModel):
     name: str
     description: Optional[str] = None
     flags: dict
-    owner_id: Optional[UUID] = None
+    owner: Optional[UserSummaryResponse] = None
+    team_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
 
 
 def _get_project(session: Session, project_id: UUID) -> models.Project:
-    project = session.get(models.Project, project_id)
+    project = (
+        session.query(models.Project)
+        .options(joinedload(models.Project.owner))
+        .filter(models.Project.id == project_id)
+        .one_or_none()
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
 
 
 @router.get("/", response_model=List[ProjectResponse])
-async def list_projects(db: Session = Depends(db_session)) -> List[ProjectResponse]:
+async def list_projects(
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+) -> List[ProjectResponse]:
+    user_teams = (
+        db.query(models.TeamMember.team_id)
+        .filter(models.TeamMember.user_id == current_user.id)
+        .all()
+    )
+    team_ids = [team.team_id for team in user_teams]
+
     projects = (
         db.query(models.Project)
+        .options(joinedload(models.Project.owner))
+        .filter(
+            (models.Project.owner_id == current_user.id) |
+            (models.Project.team_id.in_(team_ids))
+        )
         .order_by(models.Project.created_at.desc())
         .all()
     )
@@ -77,6 +104,7 @@ async def create_project(
         description=payload.description,
         flags=payload.flags or {},
         owner_id=current_user.id,
+        team_id=payload.team_id,
     )
     db.add(project)
     db.commit()

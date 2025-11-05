@@ -6,6 +6,8 @@ import { apiFetchJson } from "@/lib/fetch";
 import type { Artifact, RunStep, RunSummary } from "@/types/backend";
 import { RunStatusTracker } from "@/components/RunStatusTracker";
 
+export const revalidate = 0;
+
 interface RunPageProps {
   params: { runId: string };
 }

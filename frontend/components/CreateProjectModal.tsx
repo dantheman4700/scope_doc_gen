@@ -1,11 +1,17 @@
 "use client";
 
-import { FormEvent, MouseEvent, useState } from "react";
+import { FormEvent, MouseEvent, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 interface FormState {
   name: string;
   description: string;
+  team_id: string | null;
+}
+
+interface Team {
+  id: string;
+  name: string;
 }
 
 export function CreateProjectModal() {
@@ -13,8 +19,18 @@ export function CreateProjectModal() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [form, setForm] = useState<FormState>({ name: "", description: "" });
+  const [form, setForm] = useState<FormState>({ name: "", description: "", team_id: null });
   const [error, setError] = useState<string | null>(null);
+  const [teams, setTeams] = useState<Team[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetch("/api/teams")
+        .then((res) => res.json())
+        .then((data) => setTeams(data))
+        .catch(() => setTeams([]));
+    }
+  }, [isOpen]);
 
   function openModal() {
     setIsOpen(true);
@@ -25,7 +41,7 @@ export function CreateProjectModal() {
       return;
     }
     setIsOpen(false);
-    setForm({ name: "", description: "" });
+    setForm({ name: "", description: "", team_id: null });
     setError(null);
   }
 
@@ -40,6 +56,7 @@ export function CreateProjectModal() {
 
     const name = form.name.trim();
     const description = form.description.trim();
+    const team_id = form.team_id;
 
     if (!name) {
       setError("Project name is required.");
@@ -58,7 +75,8 @@ export function CreateProjectModal() {
         body: JSON.stringify({
           name,
           description: description || undefined,
-          flags: {}
+          flags: {},
+          team_id: team_id || undefined,
         })
       });
 
@@ -117,6 +135,25 @@ export function CreateProjectModal() {
                   disabled={isSubmitting}
                 />
               </div>
+              {teams.length > 0 && (
+                <div className="form-field">
+                  <label htmlFor="project-team">Team</label>
+                  <select
+                    id="project-team"
+                    name="team"
+                    value={form.team_id ?? ""}
+                    onChange={(event) => setForm((prev) => ({ ...prev, team_id: event.target.value || null }))}
+                    disabled={isSubmitting}
+                  >
+                    <option value="">My Projects</option>
+                    {teams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {error ? <p className="error-text">{error}</p> : null}
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={closeModal} type="button" disabled={isSubmitting}>

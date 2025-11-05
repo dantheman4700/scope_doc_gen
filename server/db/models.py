@@ -36,6 +36,32 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
 
     projects: Mapped[List["Project"]] = relationship("Project", back_populates="owner")
+    teams: Mapped[List["TeamMember"]] = relationship("TeamMember", back_populates="user")
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+
+    owner: Mapped["User"] = relationship("User")
+    members: Mapped[List["TeamMember"]] = relationship("TeamMember", back_populates="team", cascade="all, delete-orphan")
+    projects: Mapped[List["Project"]] = relationship("Project", back_populates="team")
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+
+    team_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+
+    team: Mapped["Team"] = relationship("Team", back_populates="members")
+    user: Mapped["User"] = relationship("User", back_populates="teams")
 
 
 class Project(Base):
@@ -43,6 +69,7 @@ class Project(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[Optional[UUID_t]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    team_id: Mapped[Optional[UUID_t]] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     flags: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -50,6 +77,7 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, onupdate=utcnow, nullable=False)
 
     owner: Mapped[Optional[User]] = relationship("User", back_populates="projects")
+    team: Mapped[Optional[Team]] = relationship("Team", back_populates="projects")
     files: Mapped[List["ProjectFile"]] = relationship("ProjectFile", back_populates="project", cascade="all, delete-orphan")
     runs: Mapped[List["Run"]] = relationship("Run", back_populates="project", cascade="all, delete-orphan")
 

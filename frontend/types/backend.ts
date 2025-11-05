@@ -3,6 +3,10 @@ export interface Project {
   name: string;
   description?: string | null;
   flags: Record<string, unknown>;
+  owner?: {
+    id: string;
+    email: string;
+  } | null;
   created_at: string;
   updated_at: string;
 }

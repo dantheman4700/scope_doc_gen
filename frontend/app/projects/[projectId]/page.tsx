@@ -4,6 +4,8 @@ import { requireUser } from "@/lib/auth";
 import { fetchProject, fetchProjectFiles, fetchProjectRuns } from "@/lib/projects.server";
 import ProjectWorkspace from "@/components/ProjectWorkspace";
 
+export const revalidate = 0;
+
 interface ProjectDetailPageProps {
   params: { projectId: string };
 }
