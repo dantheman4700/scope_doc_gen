@@ -72,6 +72,7 @@ class ProjectFile(Base):
     pdf_page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     use_summary_for_generation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     native_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     project: Mapped[Project] = relationship("Project", back_populates="files")
 

@@ -45,6 +45,13 @@ function statusChip(run: RunSummary): { label: string; className: string } {
   return { label: run.status, className: "chip" };
 }
 
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff"]);
+
+function isImageFile(filename: string): boolean {
+  const extension = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return IMAGE_EXTENSIONS.has(extension);
+}
+
 export function ProjectWorkspace({ project, initialFiles, initialRuns }: ProjectWorkspaceProps) {
   const router = useRouter();
   const [files, setFiles] = useState<ProjectFile[]>(initialFiles);
@@ -148,31 +155,6 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       }
     },
     [project.id]
-  );
-
-  const handleUseRunAsTemplate = useCallback(
-    (run: RunSummary) => {
-      if (run.instructions) {
-        setInstructions(run.instructions);
-      }
-      if (Array.isArray(run.included_file_ids) && run.included_file_ids.length > 0) {
-        setSelectedFileIds(new Set(run.included_file_ids));
-      }
-
-      const params = (run.params ?? {}) as Record<string, unknown>;
-      const researchModeParam = params.research_mode;
-      if (typeof researchModeParam === "string") {
-        setResearchMode(researchModeParam);
-      } else {
-        setResearchMode(run.research_mode);
-      }
-
-      const enableVectorStoreParam = params.enable_vector_store;
-      if (typeof enableVectorStoreParam === "boolean") {
-        setVectorStoreEnabled(enableVectorStoreParam);
-      }
-    },
-    []
   );
 
   const handleCreateRun = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -328,7 +310,12 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                           <small style={{ color: "#6b7280" }}>{tokenModeLabel}</small>
                           {usingSummary && file.native_token_count ? (
                             <small style={{ color: "#6b7280" }}>
-                              Native tokens: {file.native_token_count.toLocaleString()}
+                              Native: {file.native_token_count.toLocaleString()}
+                            </small>
+                          ) : null}
+                          {!usingSummary && file.is_summarized ? (
+                            <small style={{ color: "#6b7280" }}>
+                              Summary: {file.summary_token_count.toLocaleString()}
                             </small>
                           ) : null}
                         </div>
@@ -340,14 +327,16 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                         </div>
                       </td>
                       <td style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                        <button
-                          className="btn-secondary"
-                          type="button"
-                          onClick={() => handleSummarize(file.id)}
-                          disabled={summarizing || file.is_summarized}
-                        >
-                          {summarizing ? "Summarizing…" : file.is_summarized ? "Summarized" : "Summarize"}
-                        </button>
+                        {!isImageFile(file.filename) ? (
+                          <button
+                            className="btn-secondary"
+                            type="button"
+                            onClick={() => handleSummarize(file.id)}
+                            disabled={summarizing || file.is_summarized}
+                          >
+                            {summarizing ? "Summarizing…" : file.is_summarized ? "Summarized" : "Summarize"}
+                          </button>
+                        ) : null}
                         {canToggle ? (
                           <button
                             className="btn-secondary"
@@ -468,13 +457,6 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                         <Link className="btn-secondary" href={`/runs/${run.id}`}>
                           View
                         </Link>
-                        <button
-                          className="btn-secondary"
-                          type="button"
-                          onClick={() => handleUseRunAsTemplate(run)}
-                        >
-                          Use as template
-                        </button>
                         <button
                           className="btn-secondary"
                           type="button"

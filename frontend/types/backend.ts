@@ -17,6 +17,7 @@ export interface ProjectFile {
   path: string;
   token_count: number;
   native_token_count: number;
+  summary_token_count: number;
   is_summarized: boolean;
   summary_text?: string | null;
   is_too_large: boolean;

@@ -39,8 +39,37 @@ router = APIRouter(prefix="/projects/{project_id}/files", tags=["files"])
 
 LOGGER = logging.getLogger(__name__)
 
-TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".vtt"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff"}
+# As of Nov 2025, from https://support.anthropic.com/en/articles/8241126-what-kinds-of-documents-can-i-upload-to-claude-ai
+_SUPPORTED_DOC_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".odt",
+    ".rtf",
+    ".epub",
+    ".xlsx",
+}
+# These formats are treated as plain text for ingestion
+_TEXT_LIKE_EXTENSIONS = {
+    ".csv",
+    ".txt",
+    ".html",
+    ".json",
+    # The following are not officially listed but are processed into text
+    # and were supported in previous versions of the application.
+    ".md",
+    ".vtt",
+    ".yaml",
+    ".yml",
+}
+_SUPPORTED_IMG_EXTENSIONS = {
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".gif",
+    ".webp",
+}
+SUPPORTED_EXTENSIONS = _SUPPORTED_DOC_EXTENSIONS | _TEXT_LIKE_EXTENSIONS | _SUPPORTED_IMG_EXTENSIONS
+
 
 _DOCUMENT_INGESTER = DocumentIngester()
 _FILE_SUMMARIZER: Optional[FileSummarizer] = None
@@ -63,6 +92,7 @@ class ProjectFileResponse(BaseModel):
     pdf_page_count: Optional[int] = None
     use_summary_for_generation: bool
     native_token_count: int
+    summary_token_count: int
 
 
 async def _analyze_uploaded_file(
@@ -92,10 +122,12 @@ async def _analyze_uploaded_file(
 
     token_count = 0
     native_token_count = 0
+    summary_token_count = 0
     is_summarized = False
     summary_text: Optional[str] = None
     use_summary_for_generation = is_too_large  # Default: use summary only if too large
 
+    # Always calculate native token count first, if possible
     if not is_too_large:
         blocks = _build_token_blocks(
             filename=filename,
@@ -113,8 +145,9 @@ async def _analyze_uploaded_file(
                 token_count = 0
         else:
             LOGGER.info("No countable content for %s; defaulting token count to 0", filename)
-    else:
-        # Large files: calculate native token count first (for reference)
+
+    # For large files, we still want to know the native token count for context
+    if is_too_large:
         blocks = _build_token_blocks(
             filename=filename,
             media_type=normalized_media_type,
@@ -127,24 +160,30 @@ async def _analyze_uploaded_file(
             except TokenCountingError as exc:
                 LOGGER.warning("Token counting (native) failed for %s: %s", filename, exc)
                 native_token_count = 0
-        
-        # Then create summary
+
+    # If the file is too large, it MUST be summarized.
+    # The summary token count becomes the main token_count.
+    if is_too_large:
         summary_text = await _summarize_file_contents(filename, contents)
         if summary_text:
             is_summarized = True
             try:
-                token_count = await count_tokens_for_blocks([make_text_block(summary_text)])
+                summary_token_count = await count_tokens_for_blocks([make_text_block(summary_text)])
+                token_count = summary_token_count
             except TokenCountingError as exc:
                 LOGGER.warning("Token counting (summary) failed for %s: %s", filename, exc)
-                token_count = max(1, len(summary_text) // 4)
+                summary_token_count = max(1, len(summary_text) // 4)
+                token_count = summary_token_count
         else:
             LOGGER.warning("Summary unavailable for oversized file %s", filename)
             token_count = 0
+            summary_token_count = 0
 
     return {
         "media_type": normalized_media_type,
         "token_count": token_count,
         "native_token_count": native_token_count,
+        "summary_token_count": summary_token_count,
         "is_summarized": is_summarized,
         "summary_text": summary_text,
         "is_too_large": is_too_large,
@@ -176,7 +215,7 @@ def _build_token_blocks(
 def _treat_as_text(media_type: str, suffix: str) -> bool:
     if media_type.startswith("text/"):
         return True
-    if suffix in TEXT_EXTENSIONS:
+    if suffix in _TEXT_LIKE_EXTENSIONS:
         return True
     if media_type in {"application/json", "application/xml"}:
         return True
@@ -186,7 +225,7 @@ def _treat_as_text(media_type: str, suffix: str) -> bool:
 def _treat_as_image(media_type: str, suffix: str) -> bool:
     if media_type.startswith("image/"):
         return True
-    if suffix in IMAGE_EXTENSIONS:
+    if suffix in _SUPPORTED_IMG_EXTENSIONS:
         return True
     return False
 
@@ -309,6 +348,13 @@ async def upload_files(
 
     try:
         for upload in files:
+            file_ext = Path(upload.filename).suffix.lower()
+            if file_ext not in SUPPORTED_EXTENSIONS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unsupported file type for '{upload.filename}'. Supported types: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+                )
+
             contents = await upload.read()
             if not contents:
                 raise HTTPException(
@@ -347,6 +393,7 @@ async def upload_files(
                 checksum=checksum,
                 token_count=metadata["token_count"],
                 native_token_count=metadata["native_token_count"],
+                summary_token_count=metadata["summary_token_count"],
                 is_summarized=metadata["is_summarized"],
                 summary_text=metadata.get("summary_text"),
                 is_too_large=metadata["is_too_large"],
@@ -395,6 +442,13 @@ async def summarize_file(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
+    file_ext = Path(record.filename).suffix.lower()
+    if file_ext in _SUPPORTED_IMG_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Summarization is not supported for image files.",
+        )
+
     storage_key = _storage_key(str(project.id), record.path)
 
     with TemporaryDirectory() as tmpdir:
@@ -416,12 +470,27 @@ async def summarize_file(
         LOGGER.warning("Token counting (summary) failed for %s: %s", record.filename, exc)
         summary_token_count = max(1, len(summary_text) // 4)
 
-    # Store native token count if not already set
-    if record.native_token_count == 0 and record.token_count > 0:
-        record.native_token_count = record.token_count
+    # If native_token_count is not set, calculate it from the original content
+    if record.native_token_count == 0:
+        blocks = _build_token_blocks(
+            filename=record.filename,
+            media_type=record.media_type or "",
+            contents=contents,
+            suffix=Path(record.filename).suffix.lower(),
+        )
+        if blocks:
+            try:
+                native_tokens = await count_tokens_for_blocks(blocks)
+                record.native_token_count = native_tokens
+            except TokenCountingError as exc:
+                LOGGER.warning("Token counting (native) failed for %s: %s", record.filename, exc)
+                record.native_token_count = 0  # Fallback
+        else:
+            record.native_token_count = 0
 
     record.summary_text = summary_text
     record.is_summarized = True
+    record.summary_token_count = summary_token_count
     record.token_count = summary_token_count
     record.use_summary_for_generation = True
     db.commit()
@@ -469,13 +538,12 @@ async def toggle_file_mode(
         )
 
     # Toggle the mode
-    record.use_summary_for_generation = not record.use_summary_for_generation
+    toggled_to_summary = not record.use_summary_for_generation
+    record.use_summary_for_generation = toggled_to_summary
 
     # Update token_count to reflect the selected mode
-    if record.use_summary_for_generation:
-        # Switching to summary mode - token_count should already be summary count
-        # (set during summarization)
-        pass
+    if toggled_to_summary:
+        record.token_count = record.summary_token_count
     else:
         # Switching to native mode - restore native token count
         record.token_count = record.native_token_count

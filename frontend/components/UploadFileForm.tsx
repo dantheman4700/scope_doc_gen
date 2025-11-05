@@ -40,11 +40,20 @@ export function UploadFileForm({ projectId }: UploadFileFormProps) {
     }
   }
 
+  const supportedFileTypes = [
+    // Documents
+    ".pdf", ".docx", ".odt", ".rtf", ".epub", ".xlsx",
+    // Text-like
+    ".csv", ".txt", ".html", ".json", ".md", ".vtt", ".yaml", ".yml",
+    // Images
+    ".jpeg", ".jpg", ".png", ".gif", ".webp",
+  ].join(",");
+
   return (
     <form onSubmit={handleSubmit} encType="multipart/form-data">
       <div className="form-field">
         <label htmlFor="files">Select documents</label>
-        <input id="files" name="files" type="file" multiple required />
+        <input id="files" name="files" type="file" multiple required accept={supportedFileTypes} />
       </div>
       {error ? <p style={{ color: "#dc2626" }}>{error}</p> : null}
       <button className="btn-primary" type="submit" disabled={busy}>
