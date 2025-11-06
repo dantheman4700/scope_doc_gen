@@ -172,6 +172,9 @@ class JobRegistry:
             return
 
         paths = ensure_project_structure(DATA_ROOT, job.project_id)
+        run_dir = paths.runs_dir / str(job.id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
         sync_step_id = self._start_run_step(job.id, "sync inputs")
         try:
             sync_errors, sync_warnings = self._prepare_workspace(
@@ -230,8 +233,8 @@ class JobRegistry:
         try:
             generator = ScopeDocGenerator(
                 input_dir=paths.input_dir,
-                output_dir=paths.outputs_dir,
-                project_dir=paths.root,
+                output_dir=run_dir / "outputs",
+                project_dir=run_dir,
             )
 
             if options.parent_run_id:
@@ -418,12 +421,17 @@ class JobRegistry:
         paths,
         result_rel: Optional[str],
     ) -> Dict[str, UUID]:
+        run_dir = paths.runs_dir / str(run_id)
+        run_working_dir = run_dir / "working"
+        run_artifacts_dir = run_working_dir / "artifacts"
+        run_outputs_dir = run_dir / "outputs"
+
         entries = []
-        context_pack_path = paths.artifacts_dir / "context_pack.json"
+        context_pack_path = run_artifacts_dir / "context_pack.json"
         if context_pack_path.exists():
             entries.append(("context_pack", context_pack_path, {"type": "json"}))
 
-        variables_path = paths.outputs_dir / "extracted_variables.json"
+        variables_path = run_outputs_dir / "extracted_variables.json"
         if variables_path.exists():
             entries.append(("variables", variables_path, {"type": "json"}))
 
