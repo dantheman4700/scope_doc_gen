@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import statistics
-from typing import Iterable, List, Optional
-import json
+from typing import List, Optional
+from uuid import UUID
 
-from .history_db import HistoryDatabase, DEFAULT_VECTOR_DIM
+from ..services.vector_store import VectorStore
 from .history_profiles import ProfileEmbedder
 
 
@@ -125,14 +125,14 @@ class HistoryRetriever:
         min_similarity: float = 0.2,
         extractor: Optional[object] = None,
     ) -> None:
-        self.db = HistoryDatabase(dsn)
         self.embedder = ProfileEmbedder(model_name)
         self.top_n = top_n
         self.min_similarity = min_similarity
         self.extractor = extractor
-        # For OpenAI embeddings we know the dimensions; otherwise default
-        dim = getattr(self.embedder, "dim", None) or DEFAULT_VECTOR_DIM
-        self.db.ensure_schema(vector_dim=dim)
+        # For OpenAI embeddings we know the dimensions
+        embedding_dim = getattr(self.embedder, "dim", None) or 1536
+        self.vector_store = VectorStore(dsn, embedding_dim=embedding_dim)
+        self.vector_store.ensure_schema()
 
     def fetch_reference_block(
         self,
@@ -157,11 +157,43 @@ class HistoryRetriever:
         _qp_preview = query_profile[:200].replace("\n", " ")
         print(f"[INFO] History query profile (first 200 chars): {_qp_preview}")
         embedding = self.embedder.embed(query_profile)
-        results = self.db.fetch_similar_profiles(
-            embedding,
-            top_n=self.top_n,
-            min_similarity=self.min_similarity,
+        
+        # Search for historical scopes (project_id=None for global historical records)
+        vector_results = self.vector_store.similarity_search(
+            embedding=list(embedding),
+            top_k=self.top_n,
+            project_id=None,
         )
+        
+        # Convert VectorRecord results to the format expected by format_reference_block
+        results = []
+        for record in vector_results:
+            metadata = record.metadata or {}
+            # VectorStore uses cosine distance, convert to similarity
+            similarity = 1 - record.similarity if record.similarity is not None else None
+            results.append({
+                "scope_id": str(record.id),
+                "profile_text": metadata.get("profile_text"),
+                "distance": record.similarity,
+                "similarity": similarity,
+                "hours_total": metadata.get("hours_total"),
+                "timeline_weeks": metadata.get("timeline_weeks"),
+                "milestone_count": metadata.get("milestone_count"),
+                "services": metadata.get("services"),
+                "tags": metadata.get("tags"),
+                "dev_hours": metadata.get("dev_hours"),
+                "training_hours": metadata.get("training_hours"),
+                "pm_hours": metadata.get("pm_hours"),
+                "total_setup_cost": metadata.get("total_setup_cost"),
+                "monthly_operating_cost": metadata.get("monthly_operating_cost"),
+                "automation_outputs": metadata.get("automation_outputs"),
+                "client_name": metadata.get("client_name"),
+                "project_name": metadata.get("project_name"),
+                "industry": metadata.get("industry"),
+                "project_type": metadata.get("project_type"),
+                "title": metadata.get("title"),
+            })
+        
         print(f"[INFO] History raw matches: {len(results)}")
         if results:
             preview = ", ".join(

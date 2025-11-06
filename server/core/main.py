@@ -18,10 +18,10 @@ from .config import (
     INPUT_DOCS_DIR,
     OUTPUT_DIR,
     HISTORY_ENABLED,
-    HISTORY_DB_URL,
     HISTORY_EMBEDDING_MODEL,
     HISTORY_TOPN,
     ENABLE_WEB_RESEARCH,
+    VECTOR_STORE_DSN,
 )
 from .ingest import DocumentIngester
 from .llm import ClaudeExtractor
@@ -808,7 +808,8 @@ def main():
     try:
         history_retriever = None
         if args.history_use or HISTORY_ENABLED:
-            history_dsn = args.history_dsn or HISTORY_DB_URL
+            # Use main database DSN for historical scope retrieval
+            history_dsn = args.history_dsn or VECTOR_STORE_DSN
             if history_dsn:
                 history_model = args.history_model or HISTORY_EMBEDDING_MODEL
                 history_topn = args.history_topn or HISTORY_TOPN
@@ -819,7 +820,7 @@ def main():
                         top_n=history_topn,
                         extractor=None,  # temporary, replaced after generator init
                     )
-                    print("[OK] Historical retrieval enabled")
+                    print("[OK] Historical retrieval enabled (using main database)")
                 except Exception as err:
                     print(f"[WARN] Could not initialize historical retrieval: {err}")
             else:

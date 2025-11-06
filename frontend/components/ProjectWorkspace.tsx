@@ -426,7 +426,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 <th>Status</th>
                 <th>Mode</th>
                 <th>Included files</th>
-                <th>Instructions</th>
+                <th style={{ maxWidth: "300px" }}>Instructions</th>
                 <th style={{ width: "220px" }}>Actions</th>
               </tr>
             </thead>
@@ -438,9 +438,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
               ) : (
                 runs.map((run) => {
                   const chip = statusChip(run);
-                  const instructionPreview = run.instructions
-                    ? `${run.instructions.slice(0, 120)}${run.instructions.length > 120 ? "…" : ""}`
-                    : "—";
+                  const instructionText = run.instructions || "—";
                   const includedCount = Array.isArray(run.included_file_ids) ? run.included_file_ids.length : 0;
                   const canQuickRegen = run.status.toLowerCase() === "success";
 
@@ -452,7 +450,9 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                       </td>
                       <td>{run.run_mode}</td>
                       <td>{includedCount}</td>
-                      <td>{instructionPreview}</td>
+                      <td style={{ maxWidth: "300px", whiteSpace: "normal", wordBreak: "break-word" }}>
+                        {instructionText}
+                      </td>
                       <td style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                         <Link className="btn-secondary" href={`/runs/${run.id}`}>
                           View

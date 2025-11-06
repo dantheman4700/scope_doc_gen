@@ -361,6 +361,10 @@ async def embed_run_output(
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
 ):
+    """
+    Create a compact profile embedding for a run using its extracted variables.
+    This mirrors the import system for consistent similarity matching.
+    """
     vector_store = getattr(request.app.state, "vector_store", None)
     if vector_store is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector store unavailable")
@@ -371,15 +375,16 @@ async def embed_run_output(
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before embedding")
 
-    artifact = (
+    # Find the extracted variables artifact
+    variables_artifact = (
         db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "variables")
         .order_by(models.Artifact.created_at.desc())
         .first()
     )
 
-    if artifact is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rendered document available for embedding")
+    if variables_artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No extracted variables available for embedding")
 
     project_uuid = None
     project_id_str = str(run.project_id)
@@ -388,32 +393,65 @@ async def embed_run_output(
     except Exception:
         project_uuid = None
 
+    # Load the extracted variables
     try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        local_path = await _ensure_artifact_local(project_id_str, variables_artifact, storage)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download variables: {exc}")
 
     if not local_path.exists() or not local_path.is_file():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Variables artifact is unavailable")
 
     try:
-        content = local_path.read_text(encoding="utf-8")
+        import json
+        with open(local_path, 'r', encoding='utf-8') as f:
+            variables = json.load(f)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse variables: {exc}")
 
+    # Build compact profile text (same as import system)
+    try:
+        from server.core.history_profiles import build_profile_text
+        profile_text = build_profile_text(
+            title=variables.get("project_name"),
+            variables=variables,
+            services=variables.get("services"),
+            tags=variables.get("tags"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to build profile: {exc}")
+
+    # Generate embedding from compact profile
     try:
         embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
-        embedding = list(embedder.embed(content))
+        embedding = list(embedder.embed(profile_text))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Embedding generation failed: {exc}")
 
+    # Store full variables in metadata for reference
     metadata = {
         "project_id": project_id_str,
         "run_id": str(run.id),
         "mode": run.mode,
         "research_mode": run.research_mode,
         "result_path": run.result_path,
-        "artifact_path": artifact.path,
+        "profile_text": profile_text,
+        "title": variables.get("project_name"),
+        "hours_total": variables.get("hours_total"),
+        "timeline_weeks": variables.get("timeline_weeks"),
+        "milestone_count": len(variables.get("milestones", [])),
+        "services": variables.get("services"),
+        "tags": variables.get("tags"),
+        "dev_hours": variables.get("dev_hours"),
+        "training_hours": variables.get("training_hours"),
+        "pm_hours": variables.get("pm_hours"),
+        "total_setup_cost": variables.get("total_setup_cost"),
+        "monthly_operating_cost": variables.get("monthly_operating_cost"),
+        "automation_outputs": variables.get("automation_outputs"),
+        "client_name": variables.get("client_name"),
+        "project_name": variables.get("project_name"),
+        "industry": variables.get("industry"),
+        "project_type": variables.get("project_type"),
     }
     if run.instructions:
         metadata["instructions"] = run.instructions
@@ -428,7 +466,7 @@ async def embed_run_output(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to store embedding: {exc}")
 
-    return {"embedding_id": str(embedding_id)}
+    return {"embedding_id": str(embedding_id), "profile_text": profile_text}
 
 
 @run_router.get("/{run_id}/download-docx")

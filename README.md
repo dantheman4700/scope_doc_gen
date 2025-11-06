@@ -89,9 +89,9 @@ Key variables:
 
 - `SCOPE_DATA_ROOT` – base directory for project data (defaults to `<repo>/data`).
 - `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY` – required for Claude/Perplexity features.
-- `DATABASE_DSN` – PostgreSQL connection string.
+- `DATABASE_DSN` – PostgreSQL connection string (used for both app data and historical scope embeddings).
 - `SESSION_SECRET` – used to sign session cookies.
-- `HISTORY_ENABLED`, `HISTORY_DB_URL` – optional historical reference database.
+- `HISTORY_ENABLED` – optional toggle for historical reference scope retrieval (uses main database).
 
 ## Development Notes
 

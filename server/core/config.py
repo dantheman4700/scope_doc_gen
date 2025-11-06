@@ -75,13 +75,12 @@ PROJECTS_DATA_DIR = DATA_ROOT / "projects"
 INPUT_DOCS_DIR = DATA_ROOT / "legacy_input"
 OUTPUT_DIR = DATA_ROOT / "legacy_outputs"
 
-# Historical scope retrieval (optional)
+# Historical scope retrieval (optional) - now uses main database
 def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 HISTORY_ENABLED = _env_flag("HISTORY_ENABLED")
-HISTORY_DB_URL = os.getenv("HISTORY_DB_URL")
 HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "text-embedding-3-small")
 HISTORY_TOPN = int(os.getenv("HISTORY_TOPN", "12"))
 

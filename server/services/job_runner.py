@@ -259,7 +259,7 @@ class JobRegistry:
             if variables_artifact_id:
                 self._update_run(job.id, extracted_variables_artifact_id=variables_artifact_id)
                 job.params.setdefault("extracted_variables_artifact_id", str(variables_artifact_id))
-            self._record_embedding(job, paths, result_rel, options)
+            # Embedding now triggered manually via API endpoint for consistency
         except Exception as exc:  # pragma: no cover - execution safeguard
             self._mark_failed(job, str(exc))
             self._update_run(job.id, status=JobState.FAILED, finished_at=datetime.utcnow(), error=str(exc))
@@ -465,57 +465,10 @@ class JobRegistry:
             return str(candidate)
 
     # ------------------------------------------------------------------
-    # Embeddings
+    # Embeddings (manual trigger only - removed automatic embedding)
     # ------------------------------------------------------------------
-    def _record_embedding(self, job: JobStatus, paths, result_rel: Optional[str], options: RunOptions) -> None:
-        if not options.enable_vector_store:
-            return
-        if self._vector_store is None:
-            return
-        embedder = self._get_embedder()
-        if embedder is None:
-            return
-        if not result_rel:
-            return
-
-        rendered_path = (paths.root / Path(result_rel)).resolve()
-        if not rendered_path.exists() or not rendered_path.is_file():
-            return
-
-        try:
-            content = rendered_path.read_text(encoding="utf-8")
-        except Exception as exc:
-            print(f"[WARN] Unable to read rendered document for embedding: {exc}")
-            return
-
-        try:
-            vector = list(embedder.embed(content))
-        except Exception as exc:
-            print(f"[WARN] Failed to generate embedding: {exc}")
-            return
-
-        try:
-            project_uuid = None
-            try:
-                project_uuid = UUID(job.project_id)
-            except Exception:
-                project_uuid = None
-
-            metadata = {
-                "project_id": job.project_id,
-                "run_id": str(job.id),
-                "path": str(result_rel),
-                "mode": job.run_mode,
-                "research_mode": job.research_mode,
-            }
-            self._vector_store.upsert_embedding(
-                embedding=vector,
-                project_id=project_uuid,
-                doc_kind="rendered_scope",
-                metadata=metadata,
-            )
-        except Exception as exc:
-            print(f"[WARN] Failed to store embedding: {exc}")
+    # Embedding is now manually triggered via POST /runs/{run_id}/embed endpoint
+    # This ensures consistent compact profile embeddings using extracted variables
 
     def _get_embedder(self) -> Optional[ProfileEmbedder]:
         if self._embedder is not None:

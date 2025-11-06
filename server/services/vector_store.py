@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import psycopg
 from pgvector.psycopg import Vector, register_vector
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ class VectorStore:
                         project_id,
                         doc_kind,
                         Vector(list(embedding)),
-                        metadata,
+                        Json(metadata) if metadata else None,
                     ),
                 )
             except Exception as exc:
