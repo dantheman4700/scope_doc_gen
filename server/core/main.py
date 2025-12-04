@@ -434,7 +434,7 @@ class ScopeDocGenerator:
                             if url in seen_urls:
                                 continue
                             seen_urls.add(url)
-                            appendix_lines.append(f"{fnd.provider.title()} reference – {url}")
+                            appendix_lines.append(f"Reference – {url}")
                             added += 1
                         if added >= 5:
                             break

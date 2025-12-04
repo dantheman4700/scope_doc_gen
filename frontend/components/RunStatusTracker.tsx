@@ -34,6 +34,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
   const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
   const [docxError, setDocxError] = useState<string | null>(null);
   const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
+  const [mdError, setMdError] = useState<string | null>(null);
+  const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
 
   useEffect(() => {
     if (!isPolling) {
@@ -253,6 +255,35 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
     }
   };
 
+  const handleDownloadMd = async () => {
+    setMdError(null);
+    setIsDownloadingMd(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/download-md`);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Download failed (${response.status})`;
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const resultName = run.result_path ? run.result_path.split("/").pop() ?? `run-${run.id}.md` : `run-${run.id}.md`;
+      const filename = /\\.md$/i.test(resultName) ? resultName : `${resultName}.md`;
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Download failed";
+      setMdError(message);
+    } finally {
+      setIsDownloadingMd(false);
+    }
+  };
+
   return (
     <div className="run-tracker">
       <section className="run-tracker__header">
@@ -279,6 +310,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           {embedError ? <p className="error-text">{embedError}</p> : null}
           {embedMessage ? <p className="success-text">{embedMessage}</p> : null}
           {docxError ? <p className="error-text">{docxError}</p> : null}
+          {mdError ? <p className="error-text">{mdError}</p> : null}
           <button
             className="btn-secondary"
             type="button"
@@ -286,6 +318,14 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
             disabled={isDownloadingDocx || !canEmbed}
           >
             {isDownloadingDocx ? "Preparing…" : "Download DOCX"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleDownloadMd}
+            disabled={isDownloadingMd || !canEmbed}
+          >
+            {isDownloadingMd ? "Preparing…" : "Download MD"}
           </button>
           <button
             className="btn-secondary"

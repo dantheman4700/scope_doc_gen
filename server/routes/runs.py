@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from server.core.research import ResearchMode
 from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL
 from server.core.history_profiles import ProfileEmbedder
-from docx import Document
+from server.core.markdown_to_docx import markdown_to_docx_bytes
 
 from ..services import JobRegistry, RunOptions
 from ..dependencies import db_session, get_storage
@@ -100,84 +100,7 @@ async def _ensure_artifact_local(
 
     return local_path
 
-
-def _markdown_to_docx_bytes(content: str) -> io.BytesIO:
-    document = Document()
-    in_code_block = False
-    code_buffer: List[str] = []
-
-    def _add_runs_with_emphasis(paragraph, text: str) -> None:
-        # Minimal inline markdown support: **bold**, __bold__, `code`
-        import re
-        parts = re.split(r"(\*\*.+?\*\*|__.+?__|`.+?`)", text)
-        for part in parts:
-            if not part:
-                continue
-            if (part.startswith("**") and part.endswith("**") and len(part) >= 4):
-                run = paragraph.add_run(part[2:-2])
-                run.bold = True
-            elif (part.startswith("__") and part.endswith("__") and len(part) >= 4):
-                run = paragraph.add_run(part[2:-2])
-                run.bold = True
-            elif (part.startswith("`") and part.endswith("`") and len(part) >= 2):
-                # Render inline code as a plain run for now
-                paragraph.add_run(part[1:-1])
-            else:
-                paragraph.add_run(part)
-
-    for raw_line in content.splitlines():
-        line = raw_line.rstrip("\n")
-        stripped = line.strip()
-
-        if stripped.startswith("```"):
-            if in_code_block:
-                paragraph = document.add_paragraph("\n".join(code_buffer) if code_buffer else "")
-                paragraph.style = "Intense Quote"
-                code_buffer.clear()
-                in_code_block = False
-            else:
-                in_code_block = True
-            continue
-
-        if in_code_block:
-            code_buffer.append(line)
-            continue
-
-        if not stripped:
-            document.add_paragraph("")
-            continue
-
-        if stripped.startswith("#"):
-            level = len(stripped) - len(stripped.lstrip("#"))
-            text = stripped[level:].strip()
-            level = max(1, min(level, 4))
-            heading_para = document.add_heading("", level=level)
-            _add_runs_with_emphasis(heading_para, text or "")
-            continue
-
-        if stripped.startswith(('- ', '* ')):
-            bullet_text = stripped[2:].strip()
-            bullet_para = document.add_paragraph(style="List Bullet")
-            _add_runs_with_emphasis(bullet_para, bullet_text)
-            continue
-
-        if stripped.startswith(">"):
-            quote_para = document.add_paragraph("")
-            quote_para.style = "Intense Quote"
-            _add_runs_with_emphasis(quote_para, stripped[1:].strip())
-            continue
-
-        body_para = document.add_paragraph("")
-        _add_runs_with_emphasis(body_para, stripped)
-
-    if code_buffer:
-        paragraph = document.add_paragraph("\n".join(code_buffer))
-        paragraph.style = "Intense Quote"
-
-    buffer = io.BytesIO()
-    document.save(buffer)
-    buffer.seek(0)
-    return buffer
+ 
 
 
 def _job_to_response(job: JobStatus) -> RunStatusResponse:
@@ -506,7 +429,7 @@ async def download_run_docx(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
 
-    buffer = _markdown_to_docx_bytes(content)
+    buffer = markdown_to_docx_bytes(content)
     filename_stem = Path(artifact.path).stem or f"run-{run.id}"
     docx_filename = f"{filename_stem}.docx"
 
@@ -515,4 +438,49 @@ async def download_run_docx(
     }
     media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return StreamingResponse(buffer, media_type=media_type, headers=headers)
+
+
+@run_router.get("/{run_id}/download-md")
+async def download_run_md(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
+
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        data = local_path.read_bytes()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    filename = Path(artifact.path).name or f"run-{run.id}.md"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+    media_type = "text/markdown; charset=utf-8"
+    return StreamingResponse(io.BytesIO(data), media_type=media_type, headers=headers)
 

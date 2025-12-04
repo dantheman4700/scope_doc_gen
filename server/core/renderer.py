@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
 
+from .markdown_to_docx import save_markdown_as_docx
 
 class TemplateRenderer:
     """Handles rendering of scope document templates with extracted variables."""
@@ -271,6 +272,15 @@ class TemplateRenderer:
             f.write(rendered_content)
         
         print(f"[OK] Saved to: {output_path}")
+        
+        # Also save a DOCX version alongside the Markdown when extension is .md
+        try:
+            if output_path.suffix.lower() == ".md":
+                docx_path = output_path.with_suffix(".docx")
+                save_markdown_as_docx(rendered_content, docx_path)
+                print(f"[OK] Saved to: {docx_path}")
+        except Exception as docx_err:
+            print(f"[WARN] Failed to create DOCX: {docx_err}")
     
     def generate_filename(self, variables: Dict[str, Any]) -> str:
         """
