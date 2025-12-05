@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from server.core.config import (
     CORS_ALLOW_CREDENTIALS,
@@ -29,28 +30,35 @@ from .routes import (
 )
 from .services import VectorStore, VectorStoreError, JobRegistry
 
+# Basic logging config (stdout) if not already configured by the host.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+logger = logging.getLogger("scope.api")
+
 
 def _attach_vector_store(app: FastAPI) -> None:
     """Initialise the pgvector-backed store if configured."""
 
     if not VECTOR_STORE_DSN:
-        print("[INFO] Vector store not configured (no VECTOR_STORE_DSN)")
+        logger.info("Vector store not configured (no VECTOR_STORE_DSN)")
         app.state.vector_store = None
         return
 
     try:
         embedding_dim = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
-        print(f"[INFO] Initializing vector store with dimension {embedding_dim}")
+        logger.info("Initializing vector store with dimension %s", embedding_dim)
         store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)
         store.ensure_schema()
         app.state.vector_store = store
-        print("[INFO] Vector store initialized successfully")
+        logger.info("Vector store initialized successfully")
     except Exception as exc:  # pragma: no cover - logging path
         app.state.vector_store = None
         detail = exc if isinstance(exc, VectorStoreError) else str(exc)
-        print(f"[WARN] Vector store unavailable: {detail}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Vector store unavailable: %s", detail)
 
 
 def _attach_job_registry(app: FastAPI) -> None:
@@ -90,6 +98,15 @@ def create_app() -> FastAPI:
 
     _attach_vector_store(app)
     _attach_job_registry(app)
+
+    @app.middleware("http")
+    async def error_logging_middleware(request: Request, call_next):
+        try:
+            response = await call_next(request)
+            return response
+        except Exception:
+            logger.exception("Unhandled exception during request")
+            raise
 
     return app
 

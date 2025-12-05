@@ -335,15 +335,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
   };
 
   const handleExportGoogleDoc = async () => {
-    // If we already know the Google Doc URL, just open it without calling the API again.
-    if (googleDocUrl) {
-      setGdocError(null);
-      setGdocMessage(null);
-      window.open(googleDocUrl, "_blank", "noopener,noreferrer");
-      setGdocMessage("Opened Google Doc in a new tab.");
-      return;
-    }
-
     // If Google isn't connected yet, start the OAuth flow instead.
     if (!isGoogleConnected) {
       await handleConnectGoogle();
@@ -378,7 +369,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
 
       const docUrl = payload.doc_url;
       if (docUrl) {
-        // Persist the URL locally so the UI shows the link without re-fetching artifacts.
+        // Persist the URL locally so we remember it without re-fetching artifacts.
         setArtifacts((prev) =>
           prev.map((artifact) => {
             if (artifact.kind !== "rendered_doc") {
@@ -453,17 +444,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           {mdError ? <p className="error-text">{mdError}</p> : null}
           {gdocError ? <p className="error-text">{gdocError}</p> : null}
           {gdocMessage ? <p className="success-text">{gdocMessage}</p> : null}
-          {googleDocUrl ? (
-            <a
-              className="link"
-              href={googleDocUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{ alignSelf: "flex-start" }}
-            >
-              Open Google Doc
-            </a>
-          ) : null}
           <button
             className="btn-secondary"
             type="button"

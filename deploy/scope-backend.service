@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=scope
-WorkingDirectory=/opt/scope_doc_gen/server
+User=dan
+WorkingDirectory=/opt/scope_doc_gen
 EnvironmentFile=/opt/scope_doc_gen/server/.env
 ExecStart=/opt/scope_doc_gen/venv/bin/uvicorn server.api:app --host 127.0.0.1 --port 8010 --workers 2
 Restart=always
