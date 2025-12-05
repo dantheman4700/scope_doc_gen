@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -30,6 +31,8 @@ from .google_oauth import get_user_google_access_token
 
 router = APIRouter(prefix="/projects/{project_id}/runs", tags=["runs"])
 run_router = APIRouter(prefix="/runs", tags=["runs"])
+
+logger = logging.getLogger(__name__)
 
 
 class CreateRunRequest(BaseModel):
@@ -501,6 +504,37 @@ async def export_run_google_doc(
     per rendered artifact. The resulting Doc URL is stored on the artifact metadata.
     """
     # Import Google client libraries lazily so the backend can still run without them.
+    # On Python 3.8, importlib.metadata lacks packages_distributions, which some
+    # google libraries expect. Shim it using importlib-metadata backport.
+    # Hard shim for py3.8: ensure importlib.metadata has packages_distributions.
+    try:
+        import importlib.metadata as _ilm  # type: ignore
+    except Exception:  # pragma: no cover - defensive
+        _ilm = None
+
+    if _ilm:
+        missing_attr = not hasattr(_ilm, "packages_distributions")
+        if missing_attr:
+            try:
+                import importlib_metadata as _ilm_backport  # type: ignore
+                import sys as _sys
+
+                _sys.modules["importlib.metadata"] = _ilm_backport
+                _ilm = _ilm_backport
+            except Exception:
+                pass
+
+        if not hasattr(_ilm, "packages_distributions"):
+            def _pd_shim():  # type: ignore
+                return {}
+
+            try:
+                _ilm.packages_distributions = _pd_shim  # type: ignore[attr-defined]
+            except Exception:
+                # Last resort: inject into module dict
+                import sys as _sys  # type: ignore
+                _sys.modules.get("importlib.metadata", _ilm).__dict__["packages_distributions"] = _pd_shim
+
     try:
         from google.oauth2.credentials import Credentials  # type: ignore
         from googleapiclient.discovery import build  # type: ignore
@@ -579,6 +613,7 @@ async def export_run_google_doc(
             docs_service,
         )
     except Exception as exc:
+        logger.exception("Failed to create Google Doc")
         message = str(exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

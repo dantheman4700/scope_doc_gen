@@ -202,8 +202,8 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
             requests.append({
                 "updateTextStyle": {
                     "range": {"startIndex": start, "endIndex": end},
-                    "textStyle": {"fontFamily": "Courier New"},
-                    "fields": "fontFamily"
+                    "textStyle": {"weightedFontFamily": {"fontFamily": "Courier New"}},
+                    "fields": "weightedFontFamily"
                 }
             })
         
