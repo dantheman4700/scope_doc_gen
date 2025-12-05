@@ -36,6 +36,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
   const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
   const [mdError, setMdError] = useState<string | null>(null);
   const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
+  const [gdocMessage, setGdocMessage] = useState<string | null>(null);
+  const [gdocError, setGdocError] = useState<string | null>(null);
+  const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
+  const [isLoadingGoogleStatus, setIsLoadingGoogleStatus] = useState<boolean>(true);
 
   useEffect(() => {
     if (!isPolling) {
@@ -108,6 +113,51 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
   }, [artifacts, previewArtifactId]);
 
   const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
+
+  const googleDocUrl = useMemo(() => {
+    const rendered = artifacts.find(
+      (artifact) =>
+        artifact.kind === "rendered_doc" &&
+        artifact.meta &&
+        typeof (artifact.meta as Record<string, unknown>).google_doc_url === "string"
+    );
+    if (!rendered) {
+      return null;
+    }
+    return (rendered.meta as Record<string, unknown>).google_doc_url as string;
+  }, [artifacts]);
+
+  useEffect(() => {
+    let ignore = false;
+    async function loadGoogleStatus() {
+      setIsLoadingGoogleStatus(true);
+      setGdocError(null);
+      try {
+        const response = await fetch("/api/google/status");
+        if (!response.ok) {
+          // Treat errors as \"not connected\" but show a soft message if helpful.
+          setIsGoogleConnected(false);
+          return;
+        }
+        const data = (await response.json()) as { connected?: boolean };
+        if (!ignore) {
+          setIsGoogleConnected(Boolean(data.connected));
+        }
+      } catch (err) {
+        if (!ignore) {
+          setIsGoogleConnected(false);
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoadingGoogleStatus(false);
+        }
+      }
+    }
+    void loadGoogleStatus();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!run.project_id || includedFileIdSet.size === 0) {
@@ -284,6 +334,96 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
     }
   };
 
+  const handleExportGoogleDoc = async () => {
+    // If we already know the Google Doc URL, just open it without calling the API again.
+    if (googleDocUrl) {
+      setGdocError(null);
+      setGdocMessage(null);
+      window.open(googleDocUrl, "_blank", "noopener,noreferrer");
+      setGdocMessage("Opened Google Doc in a new tab.");
+      return;
+    }
+
+    // If Google isn't connected yet, start the OAuth flow instead.
+    if (!isGoogleConnected) {
+      await handleConnectGoogle();
+      return;
+    }
+
+    setGdocError(null);
+    setGdocMessage(null);
+    setIsExportingGdoc(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/export-google-doc`, {
+        method: "POST"
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        doc_id?: string;
+        doc_url?: string;
+        status?: string;
+        detail?: string;
+      };
+
+      if (!response.ok) {
+        const detail = payload.detail ?? `Export failed (${response.status})`;
+        if (response.status === 400 && detail.toLowerCase().includes("google account not connected")) {
+          // Tokens are missing/expired even though the UI thought we were connected.
+          // Kick off the OAuth flow to let the user reconnect instead of failing silently.
+          setIsGoogleConnected(false);
+          await handleConnectGoogle();
+          return;
+        }
+        throw new Error(detail);
+      }
+
+      const docUrl = payload.doc_url;
+      if (docUrl) {
+        // Persist the URL locally so the UI shows the link without re-fetching artifacts.
+        setArtifacts((prev) =>
+          prev.map((artifact) => {
+            if (artifact.kind !== "rendered_doc") {
+              return artifact;
+            }
+            const meta = { ...(artifact.meta as Record<string, unknown> | null) };
+            meta.google_doc_url = docUrl;
+            if (payload.doc_id) {
+              meta.google_doc_id = payload.doc_id;
+            }
+            return { ...artifact, meta };
+          })
+        );
+
+        // Navigate directly to avoid popup blockers.
+        window.location.assign(docUrl);
+        setGdocMessage("Opened Google Doc.");
+      } else {
+        setGdocMessage("Google Doc created successfully.");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Export to Google Docs failed";
+      setGdocError(message);
+    } finally {
+      setIsExportingGdoc(false);
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    setGdocError(null);
+    setGdocMessage(null);
+    try {
+      const response = await fetch("/api/google/auth-url");
+      const payload = (await response.json().catch(() => ({}))) as { url?: string; detail?: string };
+      if (!response.ok || !payload.url) {
+        const detail = payload.detail ?? `Unable to start Google connection (${response.status})`;
+        throw new Error(detail);
+      }
+      window.location.href = payload.url;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start Google connection";
+      setGdocError(message);
+    }
+  };
+
   return (
     <div className="run-tracker">
       <section className="run-tracker__header">
@@ -311,6 +451,19 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           {embedMessage ? <p className="success-text">{embedMessage}</p> : null}
           {docxError ? <p className="error-text">{docxError}</p> : null}
           {mdError ? <p className="error-text">{mdError}</p> : null}
+          {gdocError ? <p className="error-text">{gdocError}</p> : null}
+          {gdocMessage ? <p className="success-text">{gdocMessage}</p> : null}
+          {googleDocUrl ? (
+            <a
+              className="link"
+              href={googleDocUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ alignSelf: "flex-start" }}
+            >
+              Open Google Doc
+            </a>
+          ) : null}
           <button
             className="btn-secondary"
             type="button"
@@ -326,6 +479,20 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
             disabled={isDownloadingMd || !canEmbed}
           >
             {isDownloadingMd ? "Preparing…" : "Download MD"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleExportGoogleDoc}
+            disabled={isExportingGdoc || !canEmbed || isLoadingGoogleStatus}
+          >
+            {isExportingGdoc
+              ? "Exporting…"
+              : !isGoogleConnected
+              ? "Connect Google Drive"
+              : googleDocUrl
+              ? "Open Google Doc"
+              : "Export to Google Docs"}
           </button>
           <button
             className="btn-secondary"

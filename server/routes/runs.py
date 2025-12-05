@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from server.core.research import ResearchMode
-from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL
+from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL, GOOGLE_OAUTH_SCOPES
 from server.core.history_profiles import ProfileEmbedder
 from server.core.markdown_to_docx import markdown_to_docx_bytes
 
@@ -24,6 +24,8 @@ from ..dependencies import db_session, get_storage
 from ..db import models
 from ..storage.projects import ensure_project_structure
 from ..adapters.storage import StorageBackend
+from .auth import SessionUser, get_current_user
+from .google_oauth import get_user_google_access_token
 
 
 router = APIRouter(prefix="/projects/{project_id}/runs", tags=["runs"])
@@ -483,4 +485,119 @@ async def download_run_md(
     }
     media_type = "text/markdown; charset=utf-8"
     return StreamingResponse(io.BytesIO(data), media_type=media_type, headers=headers)
+
+
+@run_router.post("/{run_id}/export-google-doc")
+async def export_run_google_doc(
+    run_id: UUID,
+    current_user: SessionUser = Depends(get_current_user),
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """
+    Export a run's rendered markdown document to Google Docs and return the Doc link.
+
+    This is an on-demand operation and will create (or reuse) a single Google Doc
+    per rendered artifact. The resulting Doc URL is stored on the artifact metadata.
+    """
+    # Import Google client libraries lazily so the backend can still run without them.
+    try:
+        from google.oauth2.credentials import Credentials  # type: ignore
+        from googleapiclient.discovery import build  # type: ignore
+        from server.core.markdown_to_googledocs import (
+            create_google_doc_from_markdown,
+            get_google_doc_url,
+        )
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Google Docs integration unavailable: {exc}",
+        )
+
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
+
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    # If we've already created a Google Doc for this artifact, return it
+    existing_url = (artifact.meta or {}).get("google_doc_url")
+    existing_id = (artifact.meta or {}).get("google_doc_id")
+    if existing_url and existing_id:
+        return {"doc_id": existing_id, "doc_url": existing_url, "status": "existing"}
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download artifact: {exc}",
+        )
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Rendered document is unavailable",
+        )
+
+    try:
+        content = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read artifact: {exc}",
+        )
+
+    # Derive a reasonable document title from the artifact filename
+    title = Path(artifact.path).stem or f"run-{run.id}"
+
+    # Build per-user Google API clients using OAuth tokens
+    access_token = get_user_google_access_token(current_user.id, db)
+
+    creds = Credentials(token=access_token, scopes=GOOGLE_OAUTH_SCOPES)
+    drive_service = build("drive", "v3", credentials=creds)
+    docs_service = build("docs", "v1", credentials=creds)
+
+    try:
+        doc_id = await run_in_threadpool(
+            create_google_doc_from_markdown,
+            content,
+            title,
+            drive_service,
+            docs_service,
+        )
+    except Exception as exc:
+        message = str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to create Google Doc: {message}",
+        )
+
+    doc_url = get_google_doc_url(doc_id)
+
+    # Persist the association on the artifact metadata for future reuse
+    meta = dict(artifact.meta or {})
+    meta.update(
+        {
+            "google_doc_id": doc_id,
+            "google_doc_url": doc_url,
+        }
+    )
+    artifact.meta = meta
+    db.add(artifact)
+    db.commit()
+
+    return {"doc_id": doc_id, "doc_url": doc_url, "status": "created"}
 

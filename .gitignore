@@ -59,5 +59,10 @@ misc_docs/
 input_docs/*
 !input_docs/README.txt
 
+# Google service account credentials
+*-*.json
+!package*.json
+!tsconfig*.json
+
 # Alembic
 alembic/versions/__pycache__/

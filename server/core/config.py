@@ -118,6 +118,16 @@ SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "scope-docs")
 # Artifact delivery configuration
 ARTIFACT_URL_EXPIRY_SECONDS = int(os.getenv("ARTIFACT_URL_EXPIRY_SECONDS", "3600"))
 
+# Google OAuth / Docs integration (per-user, via OAuth 2.0)
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
+# Scopes required for exporting scopes to Google Docs in Drive
+GOOGLE_OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/drive",
+]
+
 
 _default_cors_origins = [
     "http://localhost:3000",

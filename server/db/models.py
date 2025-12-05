@@ -192,3 +192,26 @@ class EmbeddingRecord(Base):
 
     project: Mapped[Optional[Project]] = relationship("Project")
 
+
+class GoogleAuth(Base):
+    """Stores per-user Google OAuth tokens for Docs/Drive export."""
+
+    __tablename__ = "google_auth"
+
+    user_id: Mapped[UUID_t] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    token_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False), nullable=True)
+    scope: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Temporary OAuth 'state' parameter and timestamp for CSRF protection
+    state: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    state_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, onupdate=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship("User")
+

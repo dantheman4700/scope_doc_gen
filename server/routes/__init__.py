@@ -8,6 +8,7 @@ from .embeddings import router as embeddings_router
 from .artifacts import router as artifacts_router
 from .system import router as system_router
 from .teams import router as teams_router
+from .google_oauth import router as google_router
 
 __all__ = [
     "auth_router",
@@ -19,5 +20,6 @@ __all__ = [
     "system_router",
     "run_detail_router",
     "teams_router",
+    "google_router",
 ]
 
