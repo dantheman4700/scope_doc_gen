@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -60,6 +60,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     () => new Set(initialFiles.map((file) => file.id))
   );
   const [quickRegenRun, setQuickRegenRun] = useState<RunSummary | null>(null);
+  const [runMode, setRunMode] = useState<string>("full");
   const [instructions, setInstructions] = useState<string>("");
   const [researchMode, setResearchMode] = useState<string>("quick");
   const [vectorStoreEnabled, setVectorStoreEnabled] = useState<boolean>(true);
@@ -67,6 +68,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
+  const [isPollingRuns, setIsPollingRuns] = useState<boolean>(true);
 
   const selectedFiles = useMemo(
     () => files.filter((file) => selectedFileIds.has(file.id)),
@@ -98,6 +100,30 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       return new Set(files.map((file) => file.id));
     });
   }, [files]);
+
+  // Poll runs so the project page reflects latest statuses without manual refresh
+  useEffect(() => {
+    if (!isPollingRuns) return;
+    let cancelled = false;
+    const interval = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/projects/${project.id}/runs`, {
+          cache: "no-store"
+        });
+        if (cancelled) return;
+        if (!response.ok) return; // keep silent; next tick will retry
+        const freshRuns = (await response.json()) as RunSummary[];
+        setRuns(freshRuns);
+      } catch {
+        // ignore transient errors
+      }
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [isPollingRuns, project.id]);
 
   const handleSummarize = useCallback(
     async (fileId: string) => {
@@ -167,12 +193,13 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     setIsSubmitting(true);
     setErrorMessage(null);
 
+    const isOneshot = runMode === "oneshot";
     const payload = {
-      run_mode: "full",
-      research_mode: researchMode,
+      run_mode: runMode,
+      research_mode: isOneshot ? "none" : researchMode,
       instructions: instructions.trim() || undefined,
-      enable_vector_store: vectorStoreEnabled,
-      enable_web_search: researchMode !== "none",
+      enable_vector_store: isOneshot ? false : vectorStoreEnabled,
+      enable_web_search: isOneshot ? false : researchMode !== "none",
       included_file_ids: Array.from(selectedFileIds)
     };
 
@@ -369,12 +396,25 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
         <form onSubmit={handleCreateRun} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div className="run-form__grid">
             <div className="form-field">
+              <label htmlFor="run-mode">Run mode</label>
+              <select
+                id="run-mode"
+                name="run_mode"
+                value={runMode}
+                onChange={(event) => setRunMode(event.target.value)}
+              >
+                <option value="full">Full (ingest + extraction)</option>
+                <option value="oneshot">One shot (template + docs, no research/vector store)</option>
+              </select>
+            </div>
+            <div className="form-field">
               <label htmlFor="research-mode">Research</label>
               <select
                 id="research-mode"
                 name="research_mode"
                 value={researchMode}
                 onChange={(event) => setResearchMode(event.target.value)}
+                disabled={runMode === "oneshot"}
               >
                 <option value="none">None</option>
                 <option value="quick">Quick (Claude web search)</option>
@@ -388,6 +428,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 name="vector_store"
                 value={vectorStoreEnabled ? "enabled" : "disabled"}
                 onChange={(event) => setVectorStoreEnabled(event.target.value === "enabled")}
+                disabled={runMode === "oneshot"}
               >
                 <option value="enabled">Enabled</option>
                 <option value="disabled">Disabled</option>

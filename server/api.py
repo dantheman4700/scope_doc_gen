@@ -52,9 +52,10 @@ def _attach_vector_store(app: FastAPI) -> None:
         embedding_dim = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
         logger.info("Initializing vector store with dimension %s", embedding_dim)
         store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)
-        store.ensure_schema()
+        # Don't call ensure_schema() at startup - it forces connection creation
+        # Schema will be created lazily on first use
         app.state.vector_store = store
-        logger.info("Vector store initialized successfully")
+        logger.info("Vector store initialized successfully (schema will be created on first use)")
     except Exception as exc:  # pragma: no cover - logging path
         app.state.vector_store = None
         detail = exc if isinstance(exc, VectorStoreError) else str(exc)
@@ -98,6 +99,18 @@ def create_app() -> FastAPI:
 
     _attach_vector_store(app)
     _attach_job_registry(app)
+
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """Clean up resources on application shutdown."""
+        vector_store = getattr(app.state, "vector_store", None)
+        if vector_store is not None and hasattr(vector_store, "_pool"):
+            try:
+                logger.info("Closing VectorStore connection pool...")
+                vector_store._pool.close()
+                logger.info("VectorStore connection pool closed")
+            except Exception as exc:
+                logger.error(f"Error closing VectorStore pool: {exc}")
 
     @app.middleware("http")
     async def error_logging_middleware(request: Request, call_next):

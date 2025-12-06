@@ -237,8 +237,17 @@ class JobRegistry:
                 project_dir=run_dir,
             )
 
+            feedback: Optional[dict] = None
+
             if options.parent_run_id:
                 result_path = self._run_quick_regen(job, options, generator, paths, step_callback)
+            elif options.run_mode == "oneshot":
+                result_path = generator.generate_oneshot(
+                    project_identifier=options.project_identifier,
+                    instructions=options.instructions_override,
+                    step_callback=step_callback,
+                )
+                feedback = generator.last_feedback
             else:
                 result_path = generator.generate(
                     interactive=options.interactive,
@@ -252,10 +261,18 @@ class JobRegistry:
                     allow_web_search=options.enable_web_search,
                     instructions=options.instructions_override,
                 )
+                feedback = generator.last_feedback
+            if not result_path:
+                raise ValueError("Generation returned no result path")
+            
             result_rel = self._relative_to_project(paths.root, result_path)
             if self._use_remote_storage and result_rel:
                 self._upload_to_storage(job.project_id, paths.root / Path(result_rel))
-            self._mark_success(job, result_rel)
+            
+            # Update params first, then status - ensures consistency
+            if feedback:
+                job.params["feedback"] = feedback
+            self._update_run(job.id, params=job.params)
             self._update_run(job.id, status=JobState.SUCCESS, finished_at=datetime.utcnow(), result_path=result_rel)
             artifact_ids = self._record_artifacts(job.id, job.project_id, paths, result_rel)
             variables_artifact_id = artifact_ids.get("variables")

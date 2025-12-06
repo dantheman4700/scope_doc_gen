@@ -27,7 +27,11 @@ class ClaudeExtractor:
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found. Please set it in .env file")
         
-        self.client = Anthropic(api_key=self.api_key)
+        # Add timeout to prevent hanging - 5 minutes for large requests
+        self.client = Anthropic(
+            api_key=self.api_key,
+            timeout=300.0,  # 5 minutes timeout
+        )
         self.model = CLAUDE_MODEL
         self.tools: List[Dict[str, Any]] = []
         if ENABLE_WEB_RESEARCH:
@@ -178,6 +182,168 @@ class ClaudeExtractor:
         except Exception:
             print("[WARN] Could not parse updated variables; returning original values")
             return current_variables
+
+    def generate_oneshot_markdown(
+        self,
+        *,
+        combined_documents: str,
+        template_text: str,
+        instructions: Optional[str] = None,
+        solution_hint: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate raw markdown directly (no variable extraction) and capture feedback.
+        Returns (markdown, feedback_dict).
+        """
+        system_prompt = (
+            "You are producing a scope document in markdown that must strictly follow the provided template structure. "
+            "Do not change headings or ordering. Keep the content concise and complete. "
+            "Return a JSON object with keys: "
+            '"markdown" (full rendered markdown string) and '
+            '"feedback" with keys uncertain_areas, low_confidence_sections, missing_information, notes. '
+            "Keep feedback concise and actionable. "
+            "IMPORTANT: Here are transcripts and example files and other supporting information. "
+            "Here is the scope template to follow. We are creating this job in the specified solution type. "
+            "Change nothing about the scope structure or organization, follow it to a T, and create the scope based on our inputs and desired solution type."
+        )
+
+        # Build user content with the specific oneshot prompt format
+        user_parts = [
+            "Here are transcripts and example files and other supporting information.",
+            "Here is the scope template to follow.",
+        ]
+        if solution_hint:
+            user_parts.append(f"We are creating this job in {solution_hint}.")
+        else:
+            user_parts.append("We are creating this job in the specified solution type.")
+        
+        user_parts.extend([
+            "Change nothing about the scope structure or organization, follow it to a T, and create the scope based on our inputs and desired solution type.",
+            "",
+            "SCOPE TEMPLATE:",
+            template_text,
+            "",
+            "INPUT DOCUMENTS (combined):",
+            combined_documents,
+        ])
+        
+        if instructions:
+            user_parts.extend([
+                "",
+                "ADDITIONAL INSTRUCTIONS:",
+                instructions,
+            ])
+
+        user_blocks: List[Dict[str, Any]] = [
+            {"type": "text", "text": "\n".join(user_parts)}
+        ]
+
+        # Use structured outputs (beta) to force JSON shape
+        response = self.client.beta.messages.create(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            temperature=max(0.2, TEMPERATURE),
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_blocks,
+                }
+            ],
+            betas=["structured-outputs-2025-11-13"],
+            output_format={
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "markdown": {"type": "string"},
+                        "feedback": {
+                            "type": "object",
+                            "properties": {
+                                "uncertain_areas": {"type": "array", "items": {"type": "string"}},
+                                "low_confidence_sections": {"type": "array", "items": {"type": "string"}},
+                                "missing_information": {"type": "array", "items": {"type": "string"}},
+                                "notes": {"type": "string"},
+                            },
+                            "required": [
+                                "uncertain_areas",
+                                "low_confidence_sections",
+                                "missing_information",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["markdown", "feedback"],
+                    "additionalProperties": False,
+                },
+            },
+        )
+
+        # Structured output returns JSON in the first content block
+        response_text = ""
+        try:
+            block = response.content[0]
+            # text is present in structured outputs
+            if hasattr(block, "text"):
+                response_text = block.text or ""
+            else:
+                response_text = str(block)
+        except Exception:
+            response_text = ""
+
+        markdown, feedback = self._parse_oneshot_response(response_text)
+        if not markdown:
+            raise ValueError("Claude response did not include markdown content")
+        return markdown, feedback
+
+    def generate_feedback(
+        self,
+        *,
+        combined_documents: str,
+        variables: Optional[Dict[str, Any]] = None,
+        output_markdown: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ask the model for a concise feedback/confidence report.
+        """
+        system_prompt = (
+            "Provide a concise feedback/confidence report for the scope. "
+            "Return ONLY JSON with keys: uncertain_areas (list), low_confidence_sections (list), "
+            "missing_information (list), notes (string). Keep lists short and actionable."
+        )
+
+        parts: List[str] = []
+        if variables is not None:
+            try:
+                parts.append("EXTRACTED VARIABLES:\n" + json.dumps(variables, indent=2))
+            except Exception:
+                pass
+        if output_markdown:
+            parts.append("RENDERED MARKDOWN (if available):\n" + output_markdown)
+        # Provide a compact slice of documents to ground feedback
+        preview = combined_documents[:6000]
+        parts.append("DOCUMENT CONTEXT (first 6000 chars):\n" + preview)
+
+        user_prompt = "\n\n".join(parts)
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=min(1500, MAX_TOKENS),
+                temperature=0.2,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": user_prompt}],
+                    }
+                ],
+            )
+            text = self._extract_text_from_response(response)
+            return self._parse_feedback_json(text)
+        except Exception as exc:
+            print(f"[WARN] Feedback generation failed: {exc}")
+            return {}
 
     def extract_variables_with_raw(
         self,
@@ -576,7 +742,57 @@ INSTRUCTIONS:
                     text_parts.append(block.text)
         
         return "\n".join(text_parts)
-    
+
+    def _parse_oneshot_response(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
+        """Parse oneshot JSON payload into (markdown, feedback)."""
+        text = response_text.strip()
+        try:
+            data = json.loads(text)
+        except Exception:
+            # Attempt to strip code fences if present
+            fence_start = text.find("```")
+            fence_end = text.rfind("```")
+            if fence_start != -1 and fence_end != -1 and fence_end > fence_start:
+                fenced = text[fence_start + 3:fence_end].strip()
+                try:
+                    data = json.loads(fenced)
+                except Exception:
+                    data = None
+            else:
+                data = None
+
+        if not isinstance(data, dict):
+            raise ValueError("Claude oneshot response is not valid JSON with markdown field")
+
+        markdown = str(data.get("markdown", "")).strip()
+        if not markdown:
+            raise ValueError("Claude oneshot response missing 'markdown' content")
+
+        feedback: Dict[str, Any] = {}
+        fb = data.get("feedback") or {}
+        if isinstance(fb, dict):
+            feedback = fb
+
+        return markdown, feedback
+
+    def _parse_feedback_json(self, text: str) -> Dict[str, Any]:
+        """Parse feedback JSON with graceful fallback."""
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            # Try fenced block
+            fence_start = text.find("```")
+            fence_end = text.rfind("```")
+            if fence_start != -1 and fence_end != -1 and fence_end > fence_start:
+                fenced = text[fence_start + 3:fence_end].strip()
+                try:
+                    data = json.loads(fenced)
+                    return data if isinstance(data, dict) else {}
+                except Exception:
+                    return {}
+        return {}
+
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """Parse Claude's response into a dictionary with robust fallbacks."""
         text = response_text.strip()

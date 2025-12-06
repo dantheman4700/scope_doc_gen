@@ -99,7 +99,8 @@ PERPLEXITY_BASE_URL = os.getenv("PERPLEXITY_BASE_URL", "https://api.perplexity.a
 
 # API Configuration
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = "claude-sonnet-4-5"  # Sonnet 4.5 per user preference
+# Default to Opus 4.5 unless overridden via env var
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-5")
 CLAUDE_CONTEXT_LIMIT = int(os.getenv("CLAUDE_CONTEXT_LIMIT", "100000"))
 
 # Session configuration

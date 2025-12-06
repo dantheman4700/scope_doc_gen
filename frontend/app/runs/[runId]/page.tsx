@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { requireUser } from "@/lib/auth";
 import { apiFetchJson } from "@/lib/fetch";
-import type { Artifact, RunStep, RunSummary } from "@/types/backend";
+import type { RunStep, RunSummary } from "@/types/backend";
 import { RunStatusTracker } from "@/components/RunStatusTracker";
 
 export const revalidate = 0;
@@ -27,17 +27,11 @@ export default async function RunDetailPage({ params }: RunPageProps) {
     notFound();
   }
 
-  const [stepsResponse, artifactsResponse] = await Promise.all([
-    apiFetchJson<RunStep[]>(`/runs/${params.runId}/steps`, {
-      throwIfUnauthorized: false
-    }),
-    apiFetchJson<Artifact[]>(`/runs/${params.runId}/artifacts`, {
-      throwIfUnauthorized: false
-    })
-  ]);
+  const stepsResponse = await apiFetchJson<RunStep[]>(`/runs/${params.runId}/steps`, {
+    throwIfUnauthorized: false
+  });
 
   const steps = stepsResponse.data ?? [];
-  const artifacts = artifactsResponse.data ?? [];
   const run = runResponse.data;
 
   return (
@@ -46,7 +40,6 @@ export default async function RunDetailPage({ params }: RunPageProps) {
         runId={params.runId}
         initialRun={run}
         initialSteps={steps}
-        initialArtifacts={artifacts}
       />
       <Link href={`/projects/${run.project_id}`} className="btn-secondary" style={{ alignSelf: "flex-start" }}>
         Back to project

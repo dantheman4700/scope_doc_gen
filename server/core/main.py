@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Callable
+from typing import Optional, List, Dict, Callable, Any
 
 
 StepCallback = Callable[[str, str, Optional[str]], None]
@@ -80,6 +80,7 @@ class ScopeDocGenerator:
         self.extractor = ClaudeExtractor()
         self.renderer = TemplateRenderer(TEMPLATE_PATH)
         self.history_retriever = history_retriever
+        self.last_feedback: Optional[Dict[str, Any]] = None
         
         # Load schemas
         self.variables_schema = self._load_json(VARIABLES_SCHEMA_PATH)
@@ -188,6 +189,10 @@ class ScopeDocGenerator:
         print("SCOPE DOCUMENT GENERATOR")
         print("="*80)
 
+        # Reset feedback for this run
+        self.last_feedback = None
+        attachments: List[Dict[str, str]] = []
+
         run_mode_normalized = (run_mode or "full").strip().lower()
         if run_mode_normalized not in {"fast", "full"}:
             print(f"[WARN] Unknown run mode '{run_mode}', defaulting to 'full'")
@@ -239,7 +244,7 @@ class ScopeDocGenerator:
         
         # Step 2: Combine documents
         combined = self.ingester.combine_documents(analysis_docs)
-        attachments = self._collect_attachments(analysis_docs)
+        attachments = self._collect_attachments(analysis_docs)  # For PDF/image attachments
         
         # Load optional per-file context notes
         file_context = None
@@ -401,6 +406,18 @@ class ScopeDocGenerator:
 
         notify("extract", "completed", None)
 
+        # Capture feedback/confidence for full runs
+        try:
+            feedback = self.extractor.generate_feedback(
+                combined_documents=compact_input,
+                variables=variables,
+                output_markdown=None,
+            )
+            if feedback:
+                self.last_feedback = feedback
+        except Exception as feedback_exc:
+            print(f"[WARN] Feedback capture failed: {feedback_exc}")
+
         # Force date_created to a known value (avoid LLM guessing)
         try:
             variables['date_created'] = date_override or datetime.now().date().isoformat()
@@ -486,6 +503,108 @@ class ScopeDocGenerator:
         print(f"[OK] Document saved to: {output_path}")
         
         return str(output_path)
+    
+    def generate_oneshot(
+        self,
+        *,
+        project_identifier: Optional[str] = None,
+        instructions: Optional[str] = None,
+        step_callback: Optional[StepCallback] = None,
+    ) -> str:
+        """
+        Generate a scope document in one shot (no research, no vector store, no variable extraction).
+        """
+        print("="*80)
+        print("SCOPE DOCUMENT GENERATOR (ONE SHOT)")
+        print("="*80)
+
+        self.last_feedback = None
+        attachments: List[Dict[str, str]] = []
+
+        def notify(step: str, event: str, detail: Optional[str] = None) -> None:
+            if step_callback is None:
+                return
+            try:
+                step_callback(step, event, detail)
+            except Exception as callback_exc:  # pragma: no cover - defensive log
+                print(f"[WARN] Step callback error for '{step}': {callback_exc}")
+
+        # Step 1: Ingest documents
+        print(f"\n[INFO] Ingesting documents from: {self.input_dir}")
+        notify("ingest", "started", None)
+        documents = self.ingester.ingest_directory(self.input_dir)
+        if not documents:
+            notify("ingest", "failed", "No documents found")
+            error_msg = f"No documents found to process in {self.input_dir}"
+            print(f"[ERROR] {error_msg}")
+            raise ValueError(error_msg)
+        notify("ingest", "completed", f"{len(documents)} document(s)")
+
+        analysis_docs = documents
+        for d in analysis_docs:
+            meta_parts = []
+            size_info = d.get('size_bytes')
+            if size_info is not None:
+                meta_parts.append(f"{size_info} bytes")
+            if d.get('source_type'):
+                meta_parts.append(d['source_type'])
+            if d.get('upload_via'):
+                meta_parts.append(f"via {d['upload_via']}")
+            if d.get('page_count'):
+                meta_parts.append(f"{d['page_count']} pages")
+            print(f"   - {d['filename']} ({', '.join(meta_parts)})")
+
+        # Step 2: Combine documents
+        combined = self.ingester.combine_documents(analysis_docs)
+        attachments = self._collect_attachments(analysis_docs)
+
+        file_context = {}
+        if project_identifier:
+            file_context["PROJECT_FOCUS"] = project_identifier
+
+        print(f"[OK] Combined document length: {len(combined)} characters")
+
+        # Step 3: One-shot generation (no research / history / vector store)
+        notify("extract", "started", "oneshot")
+        markdown = ""
+        feedback = {}
+        try:
+            markdown, feedback = self.extractor.generate_oneshot_markdown(
+                combined_documents=combined,
+                template_text=self.renderer.template_content,
+                instructions=instructions,
+                solution_hint=project_identifier,
+            )
+            notify("extract", "completed", "oneshot")
+        except Exception as exc:
+            notify("extract", "failed", str(exc))
+            raise
+
+        # Persist feedback for downstream consumers
+        if isinstance(feedback, dict) and feedback:
+            self.last_feedback = feedback
+            try:
+                feedback_path = self.output_dir / "oneshot_feedback.json"
+                feedback_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(feedback_path, 'w', encoding='utf-8') as f:
+                    json.dump(feedback, f, indent=2)
+                print(f"[OK] Saved feedback to: {feedback_path}")
+            except Exception as fb_err:
+                print(f"[WARN] Could not save feedback: {fb_err}")
+
+        # Step 4: Render/save markdown
+        notify("render", "started", None)
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_filename = f"scope_oneshot_{timestamp}.md"
+            output_path = self.output_dir / output_filename
+            self.renderer.save(markdown, output_path)
+            notify("render", "completed", output_filename)
+            print(f"[OK] Document saved to: {output_path}")
+            return str(output_path)
+        except Exception as render_exc:
+            notify("render", "failed", str(render_exc))
+            raise
     
     def _interactive_refinement(self, variables: dict) -> dict:
         """
@@ -791,9 +910,9 @@ def main():
     parser.add_argument(
         '--mode',
         type=str,
-        choices=['full', 'fast'],
+        choices=['full', 'fast', 'oneshot'],
         default='full',
-        help="Run mode: 'full' rebuilds context from source documents; 'fast' reuses cached context when available",
+        help="Run mode: 'full' rebuilds context from source documents; 'fast' reuses cached context when available; 'oneshot' bypasses research/history and generates directly",
     )
     parser.add_argument(
         '--research-mode',
@@ -845,16 +964,23 @@ def main():
         if args.from_variables:
             generator.generate_from_variables(args.from_variables)
         else:
-            generator.generate(
-                interactive=args.interactive,
-                project_identifier=args.project,
-                smart_ingest=not args.no_smart_ingest,
-                context_notes_path=args.context_file,
-                date_override=args.date,
-                research_mode=args.research_mode,
-                run_mode=args.mode,
-                allow_web_search=ENABLE_WEB_RESEARCH,
-            )
+            if args.mode == "oneshot":
+                generator.generate_oneshot(
+                    project_identifier=args.project,
+                    instructions=args.instructions if hasattr(args, "instructions") else None,
+                    step_callback=None,
+                )
+            else:
+                generator.generate(
+                    interactive=args.interactive,
+                    project_identifier=args.project,
+                    smart_ingest=not args.no_smart_ingest,
+                    context_notes_path=args.context_file,
+                    date_override=args.date,
+                    research_mode=args.research_mode,
+                    run_mode=args.mode,
+                    allow_web_search=ENABLE_WEB_RESEARCH,
+                )
     
     except KeyboardInterrupt:
         print("\n\n[WARN] Generation cancelled by user")

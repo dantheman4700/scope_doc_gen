@@ -124,15 +124,20 @@ class HistoryRetriever:
         top_n: int = 12,
         min_similarity: float = 0.2,
         extractor: Optional[object] = None,
+        vector_store: Optional[VectorStore] = None,
     ) -> None:
         self.embedder = ProfileEmbedder(model_name)
         self.top_n = top_n
         self.min_similarity = min_similarity
         self.extractor = extractor
-        # For OpenAI embeddings we know the dimensions
-        embedding_dim = getattr(self.embedder, "dim", None) or 1536
-        self.vector_store = VectorStore(dsn, embedding_dim=embedding_dim)
-        self.vector_store.ensure_schema()
+        # Reuse provided VectorStore or create new one (should reuse shared instance)
+        if vector_store is not None:
+            self.vector_store = vector_store
+        else:
+            # For OpenAI embeddings we know the dimensions
+            embedding_dim = getattr(self.embedder, "dim", None) or 1536
+            self.vector_store = VectorStore(dsn, embedding_dim=embedding_dim)
+            self.vector_store.ensure_schema()
 
     def fetch_reference_block(
         self,

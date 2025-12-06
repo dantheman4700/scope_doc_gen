@@ -182,7 +182,11 @@ def import_directory_to_vector_store(
     extractor = ClaudeExtractor()
 
     store = VectorStore(vector_dsn, embedding_dim=embedder.dim or 1536)
-    store.ensure_schema()
+    try:
+        store.ensure_schema()
+    except Exception as exc:
+        print(f"[ERROR] Failed to ensure vector store schema: {exc}")
+        raise
 
     ingester = DocumentIngester()
 
@@ -275,6 +279,14 @@ def import_directory_to_vector_store(
             print("[OK] Embedded:", path.name)
         except Exception as exc:
             print(f"[WARN] Failed to store embedding for {path}: {exc}")
+    
+    # Clean up VectorStore connection pool
+    try:
+        if hasattr(store, "_pool"):
+            store._pool.close()
+            print("[OK] VectorStore connection pool closed")
+    except Exception as exc:
+        print(f"[WARN] Error closing VectorStore pool: {exc}")
 
 
 def main():

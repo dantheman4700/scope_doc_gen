@@ -29,6 +29,13 @@ export interface ProjectFile {
   use_summary_for_generation: boolean;
 }
 
+export interface RunFeedback {
+  uncertain_areas?: string[];
+  low_confidence_sections?: string[];
+  missing_information?: string[];
+  notes?: string | null;
+}
+
 export interface RunSummary {
   id: string;
   project_id: string;
@@ -45,6 +52,7 @@ export interface RunSummary {
   included_file_ids: string[];
   parent_run_id?: string | null;
   extracted_variables_artifact_id?: string | null;
+  feedback?: RunFeedback | null;
 }
 
 export interface RunStep {

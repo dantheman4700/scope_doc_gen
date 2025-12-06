@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 class CreateRunRequest(BaseModel):
-    run_mode: str = Field("full", pattern="^(full|fast)$")
+    run_mode: str = Field("full", pattern="^(full|fast|oneshot)$")
     research_mode: ResearchMode = ResearchMode.QUICK
     interactive: bool = False
     project_identifier: Optional[str] = None
@@ -64,6 +64,7 @@ class RunStatusResponse(BaseModel):
     included_file_ids: List[str] = Field(default_factory=list)
     parent_run_id: Optional[str] = None
     extracted_variables_artifact_id: Optional[UUID] = None
+    feedback: Optional[dict] = None
 
 
 class RunStepResponse(BaseModel):
@@ -115,6 +116,7 @@ def _job_to_response(job: JobStatus) -> RunStatusResponse:
     data["included_file_ids"] = params.get("included_file_ids", [])
     data["parent_run_id"] = params.get("parent_run_id")
     data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
+    data["feedback"] = params.get("feedback")
     return RunStatusResponse(**data)
 
 
@@ -135,6 +137,7 @@ def _db_run_to_response(run: models.Run) -> RunStatusResponse:
         included_file_ids=run.included_file_ids or [],
         parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
         extracted_variables_artifact_id=run.extracted_variables_artifact_id,
+        feedback=(run.params or {}).get("feedback"),
     )
 
 
@@ -198,14 +201,17 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
     run_mode = payload.run_mode
     if parent_run_id:
         run_mode = "fast"
+    # Enforce oneshot constraints: no vector store, no web search
+    enable_vector_store = False if run_mode == "oneshot" else payload.enable_vector_store
+    enable_web_search = False if run_mode == "oneshot" else payload.enable_web_search
     options = RunOptions(
         interactive=payload.interactive,
         project_identifier=payload.project_identifier,
         run_mode=run_mode,
         research_mode=payload.research_mode.value,
         instructions_override=payload.instructions,
-        enable_vector_store=payload.enable_vector_store,
-        enable_web_search=payload.enable_web_search,
+        enable_vector_store=enable_vector_store,
+        enable_web_search=enable_web_search,
         included_file_ids=included_ids,
         parent_run_id=parent_run_id,
         variables_delta=payload.what_to_change,
@@ -240,27 +246,18 @@ async def get_run(
 
 
 @run_router.get("/{run_id}", response_model=RunStatusResponse)
-async def get_run_by_id(run_id: UUID, db: Session = Depends(db_session)) -> RunStatusResponse:
+async def get_run_by_id(run_id: UUID, request: Request, db: Session = Depends(db_session)) -> RunStatusResponse:
+    # Check in-memory job first (for active runs), then fall back to DB
+    registry = _registry(request)
+    job = registry.get_job(run_id)
+    if job is not None:
+        return _job_to_response(job)
+    
+    # Fall back to DB
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return RunStatusResponse(
-        id=run.id,
-        project_id=str(run.project_id),
-        status=run.status,
-        run_mode=run.mode,
-        research_mode=run.research_mode,
-        created_at=run.created_at,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        result_path=run.result_path,
-        error=run.error,
-        params=run.params,
-        instructions=run.instructions,
-        included_file_ids=run.included_file_ids or [],
-        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
-        extracted_variables_artifact_id=run.extracted_variables_artifact_id,
-    )
+    return _db_run_to_response(run)
 
 
 @run_router.get("/{run_id}/steps", response_model=List[RunStepResponse])

@@ -2,85 +2,66 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
-import type { Artifact, ProjectFile, RunStep, RunSummary } from "@/types/backend";
+import type { ProjectFile, RunFeedback, RunStep, RunSummary } from "@/types/backend";
 
 interface RunStatusTrackerProps {
   runId: string;
   initialRun: RunSummary;
   initialSteps: RunStep[];
-  initialArtifacts: Artifact[];
 }
 
 const TERMINAL_STATUSES = new Set(["success", "failed"]);
 
-export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtifacts }: RunStatusTrackerProps) {
+export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusTrackerProps) {
   const [run, setRun] = useState<RunSummary>(initialRun);
   const [steps, setSteps] = useState<RunStep[]>(initialSteps);
-  const [artifacts, setArtifacts] = useState<Artifact[]>(initialArtifacts);
   const [isPolling, setIsPolling] = useState<boolean>(!TERMINAL_STATUSES.has(initialRun.status));
   const [error, setError] = useState<string | null>(null);
-  const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
-  const [previewContent, setPreviewContent] = useState<string>("");
-  const [previewContentType, setPreviewContentType] = useState<string>("");
-  const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
+  const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
+  const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
+  const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
+  // Included files do not change after run creation, so load once and never re-render them on poll
   const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
   const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
-  const [embedMessage, setEmbedMessage] = useState<string | null>(null);
-  const [embedError, setEmbedError] = useState<string | null>(null);
-  const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
-  const [docxError, setDocxError] = useState<string | null>(null);
-  const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
-  const [mdError, setMdError] = useState<string | null>(null);
-  const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
-  const [gdocMessage, setGdocMessage] = useState<string | null>(null);
-  const [gdocError, setGdocError] = useState<string | null>(null);
-  const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
-  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
-  const [isLoadingGoogleStatus, setIsLoadingGoogleStatus] = useState<boolean>(true);
+  const [includedLoaded, setIncludedLoaded] = useState<boolean>(false);
+
+  // Recompute included IDs when run changes
+  const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
 
   useEffect(() => {
-    if (!isPolling) {
-      return;
-    }
+    if (!isPolling) return;
 
     let cancelled = false;
     const interval = window.setInterval(async () => {
       try {
-        const [runResponse, stepsResponse, artifactsResponse] = await Promise.all([
-          fetch(`/api/runs/${runId}`),
-          fetch(`/api/runs/${runId}/steps`),
-          fetch(`/api/runs/${runId}/artifacts`)
+        const [runResponse, stepsResponse] = await Promise.all([
+          fetch(`/api/runs/${runId}`, { cache: "no-store" }),
+          fetch(`/api/runs/${runId}/steps`, { cache: "no-store" })
         ]);
 
-        if (cancelled) {
-          return;
-        }
-
-        if (!runResponse.ok) {
-          throw new Error(`Status query failed: ${runResponse.status}`);
-        }
+        if (cancelled) return;
+        if (!runResponse.ok) throw new Error(`Status query failed: ${runResponse.status}`);
 
         const runData = (await runResponse.json()) as RunSummary;
         const stepsData = stepsResponse.ok ? ((await stepsResponse.json()) as RunStep[]) : [];
-        const artifactsData = artifactsResponse.ok ? ((await artifactsResponse.json()) as Artifact[]) : [];
 
-        setRun(runData);
+        setRun((prev) => (prev.status === runData.status ? prev : runData));
         setSteps(stepsData ?? []);
-        setArtifacts(artifactsData ?? []);
         setError(null);
 
-        if (TERMINAL_STATUSES.has(runData.status)) {
+        const statusLower = runData.status.toLowerCase();
+        if (TERMINAL_STATUSES.has(statusLower)) {
           setIsPolling(false);
         }
       } catch (err) {
         console.error(err);
         setError((err as Error).message);
       }
-    }, 5000);
+    }, 3000);
 
     return () => {
       cancelled = true;
@@ -90,74 +71,111 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
 
   const statusChip = useMemo(() => {
     const status = run.status.toLowerCase();
-    if (status === "running") {
-      return { label: "In progress", className: "chip chip--running" };
-    }
-    if (status === "success") {
-      return { label: "Completed", className: "chip chip--success" };
-    }
-    if (status === "failed") {
-      return { label: "Failed", className: "chip chip--failed" };
-    }
-    if (status === "pending") {
-      return { label: "Queued", className: "chip chip--pending" };
-    }
+    if (status === "running") return { label: "In progress", className: "chip chip--running" };
+    if (status === "success") return { label: "Completed", className: "chip chip--success" };
+    if (status === "failed") return { label: "Failed", className: "chip chip--failed" };
+    if (status === "pending") return { label: "Queued", className: "chip chip--pending" };
     return { label: run.status, className: "chip" };
   }, [run.status]);
 
-  const previewArtifact = useMemo(() => {
-    if (!previewArtifactId) {
-      return null;
-    }
-    return artifacts.find((artifact) => artifact.id === previewArtifactId) ?? null;
-  }, [artifacts, previewArtifactId]);
+  const feedback: RunFeedback | null = useMemo(() => {
+    const direct = (run.feedback as RunFeedback | undefined) ?? null;
+    const fromParams = (run.params?.feedback as RunFeedback | undefined) ?? null;
+    return direct ?? fromParams ?? null;
+  }, [run.feedback, run.params]);
 
-  const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
+  const canExport = run.status.toLowerCase() === "success";
 
-  const googleDocUrl = useMemo(() => {
-    const rendered = artifacts.find(
-      (artifact) =>
-        artifact.kind === "rendered_doc" &&
-        artifact.meta &&
-        typeof (artifact.meta as Record<string, unknown>).google_doc_url === "string"
-    );
-    if (!rendered) {
-      return null;
-    }
-    return (rendered.meta as Record<string, unknown>).google_doc_url as string;
-  }, [artifacts]);
-
-  useEffect(() => {
-    let ignore = false;
-    async function loadGoogleStatus() {
-      setIsLoadingGoogleStatus(true);
-      setGdocError(null);
-      try {
-        const response = await fetch("/api/google/status");
-        if (!response.ok) {
-          // Treat errors as \"not connected\" but show a soft message if helpful.
-          setIsGoogleConnected(false);
-          return;
-        }
-        const data = (await response.json()) as { connected?: boolean };
-        if (!ignore) {
-          setIsGoogleConnected(Boolean(data.connected));
-        }
-      } catch (err) {
-        if (!ignore) {
-          setIsGoogleConnected(false);
-        }
-      } finally {
-        if (!ignore) {
-          setIsLoadingGoogleStatus(false);
-        }
+  const handleDownload = async (kind: "md" | "docx") => {
+    setActionError(null);
+    setActionMessage(null);
+    if (kind === "md") setIsDownloadingMd(true);
+    if (kind === "docx") setIsDownloadingDocx(true);
+    try {
+      const endpoint = kind === "md" ? `/api/runs/${runId}/download-md` : `/api/runs/${runId}/download-docx`;
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Download failed (${response.status})`;
+        throw new Error(detail);
       }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const fallbackName = `run-${run.id}.${kind}`;
+      const resultName = run.result_path ? run.result_path.split("/").pop() ?? fallbackName : fallbackName;
+      const filename =
+        kind === "docx"
+          ? resultName.replace(/\.md$/i, "") + ".docx"
+          : /\.md$/i.test(resultName)
+          ? resultName
+          : `${resultName}.md`;
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      setActionMessage(kind === "md" ? "Markdown downloaded" : "DOCX downloaded");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Download failed";
+      setActionError(message);
+    } finally {
+      if (kind === "md") setIsDownloadingMd(false);
+      if (kind === "docx") setIsDownloadingDocx(false);
     }
-    void loadGoogleStatus();
-    return () => {
-      ignore = true;
-    };
-  }, []);
+  };
+
+  const handleExportGoogleDoc = async () => {
+    setActionError(null);
+    setActionMessage(null);
+    setIsExportingGdoc(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/export-google-doc`, { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        doc_url?: string;
+        doc_id?: string;
+        status?: string;
+        detail?: string;
+      };
+      if (!response.ok) {
+        const detail = payload.detail ?? `Export failed (${response.status})`;
+        throw new Error(detail);
+      }
+      const docUrl = payload.doc_url;
+      if (docUrl) {
+        window.open(docUrl, "_blank", "noopener,noreferrer");
+        setActionMessage("Opened Google Doc");
+      } else {
+        setActionMessage("Google Doc created");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Export to Google Docs failed";
+      setActionError(message);
+    } finally {
+      setIsExportingGdoc(false);
+    }
+  };
+
+  const handleEmbed = async () => {
+    setActionError(null);
+    setActionMessage(null);
+    setIsEmbedding(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/embed`, { method: "POST" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Embedding failed (${response.status})`;
+        throw new Error(detail);
+      }
+      setActionMessage("Scope embedded in vector store");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Embedding failed";
+      setActionError(message);
+    } finally {
+      setIsEmbedding(false);
+    }
+  };
 
   useEffect(() => {
     if (!run.project_id || includedFileIdSet.size === 0) {
@@ -180,8 +198,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           setIncludedFiles(projectFiles.filter((file) => includedFileIdSet.has(file.id)));
         }
       })
-      .catch((error) => {
-        console.error("Failed to load included files", error);
+      .catch((fetchError) => {
+        console.error("Failed to load included files", fetchError);
         if (!ignore) {
           setIncludedFiles([]);
         }
@@ -197,226 +215,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
     };
   }, [run.project_id, includedFileIdSet]);
 
-  useEffect(() => {
-    if (!previewArtifact) {
-      setPreviewContent("");
-      setPreviewContentType("");
-      setPreviewError(null);
-      setIsPreviewLoading(false);
-      return;
-    }
-
-    const artifactId = previewArtifact.id;
-
-    let cancelled = false;
-    async function loadPreview() {
-      setIsPreviewLoading(true);
-      setPreviewError(null);
-      try {
-        const response = await fetch(`/artifacts/${artifactId}/download`, {
-          credentials: "include"
-        });
-        if (!response.ok) {
-          throw new Error(`Preview failed: ${response.status}`);
-        }
-        const contentType = response.headers.get("content-type") ?? "";
-        if (!contentType.includes("text") && !contentType.includes("json")) {
-          throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
-        }
-        let text = await response.text();
-        if (contentType.includes("application/json")) {
-          try {
-            const parsed = JSON.parse(text);
-            text = JSON.stringify(parsed, null, 2);
-          } catch {
-            // leave as raw text
-          }
-        }
-        if (!cancelled) {
-          setPreviewContentType(contentType);
-          setPreviewContent(text);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setPreviewError((err as Error).message);
-          setPreviewContent("");
-        }
-      } finally {
-        if (!cancelled) {
-          setIsPreviewLoading(false);
-        }
-      }
-    }
-
-    loadPreview();
-    return () => {
-      cancelled = true;
-    };
-  }, [previewArtifact]);
-
-  const canEmbed = run.status.toLowerCase() === "success";
-
-  const handleEmbed = async () => {
-    setEmbedError(null);
-    setEmbedMessage(null);
-    setIsEmbedding(true);
-    try {
-      const response = await fetch(`/api/runs/${runId}/embed`, { method: "POST" });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
-        const detail = payload.detail ?? `Embedding failed (${response.status})`;
-        throw new Error(detail);
-      }
-      setEmbedMessage("Scope embedded in vector store");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Embedding failed";
-      setEmbedError(message);
-    } finally {
-      setIsEmbedding(false);
-    }
-  };
-
-  const handleDownloadDocx = async () => {
-    setDocxError(null);
-    setIsDownloadingDocx(true);
-    try {
-      const response = await fetch(`/api/runs/${runId}/download-docx`);
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
-        const detail = payload.detail ?? `Download failed (${response.status})`;
-        throw new Error(detail);
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const resultName = run.result_path ? run.result_path.split("/").pop() ?? `run-${run.id}` : `run-${run.id}`;
-      const filename = resultName.replace(/\.md$/i, "") + ".docx";
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Download failed";
-      setDocxError(message);
-    } finally {
-      setIsDownloadingDocx(false);
-    }
-  };
-
-  const handleDownloadMd = async () => {
-    setMdError(null);
-    setIsDownloadingMd(true);
-    try {
-      const response = await fetch(`/api/runs/${runId}/download-md`);
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
-        const detail = payload.detail ?? `Download failed (${response.status})`;
-        throw new Error(detail);
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const resultName = run.result_path ? run.result_path.split("/").pop() ?? `run-${run.id}.md` : `run-${run.id}.md`;
-      const filename = /\\.md$/i.test(resultName) ? resultName : `${resultName}.md`;
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Download failed";
-      setMdError(message);
-    } finally {
-      setIsDownloadingMd(false);
-    }
-  };
-
-  const handleExportGoogleDoc = async () => {
-    // If Google isn't connected yet, start the OAuth flow instead.
-    if (!isGoogleConnected) {
-      await handleConnectGoogle();
-      return;
-    }
-
-    setGdocError(null);
-    setGdocMessage(null);
-    setIsExportingGdoc(true);
-    try {
-      const response = await fetch(`/api/runs/${runId}/export-google-doc`, {
-        method: "POST"
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        doc_id?: string;
-        doc_url?: string;
-        status?: string;
-        detail?: string;
-      };
-
-      if (!response.ok) {
-        const detail = payload.detail ?? `Export failed (${response.status})`;
-        if (response.status === 400 && detail.toLowerCase().includes("google account not connected")) {
-          // Tokens are missing/expired even though the UI thought we were connected.
-          // Kick off the OAuth flow to let the user reconnect instead of failing silently.
-          setIsGoogleConnected(false);
-          await handleConnectGoogle();
-          return;
-        }
-        throw new Error(detail);
-      }
-
-      const docUrl = payload.doc_url;
-      if (docUrl) {
-        // Persist the URL locally so we remember it without re-fetching artifacts.
-        setArtifacts((prev) =>
-          prev.map((artifact) => {
-            if (artifact.kind !== "rendered_doc") {
-              return artifact;
-            }
-            const meta = { ...(artifact.meta as Record<string, unknown> | null) };
-            meta.google_doc_url = docUrl;
-            if (payload.doc_id) {
-              meta.google_doc_id = payload.doc_id;
-            }
-            return { ...artifact, meta };
-          })
-        );
-
-        // Navigate directly to avoid popup blockers.
-        window.location.assign(docUrl);
-        setGdocMessage("Opened Google Doc.");
-      } else {
-        setGdocMessage("Google Doc created successfully.");
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Export to Google Docs failed";
-      setGdocError(message);
-    } finally {
-      setIsExportingGdoc(false);
-    }
-  };
-
-  const handleConnectGoogle = async () => {
-    setGdocError(null);
-    setGdocMessage(null);
-    try {
-      const response = await fetch("/api/google/auth-url");
-      const payload = (await response.json().catch(() => ({}))) as { url?: string; detail?: string };
-      if (!response.ok || !payload.url) {
-        const detail = payload.detail ?? `Unable to start Google connection (${response.status})`;
-        throw new Error(detail);
-      }
-      window.location.href = payload.url;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to start Google connection";
-      setGdocError(message);
-    }
-  };
-
   return (
-    <div className="run-tracker">
+    <div className="run-tracker" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <section className="run-tracker__header">
         <div>
           <h1>Run {run.id}</h1>
@@ -432,68 +232,70 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           </p>
           {run.parent_run_id ? (
             <p className="run-tracker__parent">
-              Parent run: <Link className="link" href={`/runs/${run.parent_run_id}`}>{run.parent_run_id}</Link>
+              Parent run:{" "}
+              <Link className="link" href={`/runs/${run.parent_run_id}`}>
+                {run.parent_run_id}
+              </Link>
             </p>
           ) : null}
         </div>
         <div className="run-tracker__actions">
           {error ? <p className="error-text">{error}</p> : null}
-          {embedError ? <p className="error-text">{embedError}</p> : null}
-          {embedMessage ? <p className="success-text">{embedMessage}</p> : null}
-          {docxError ? <p className="error-text">{docxError}</p> : null}
-          {mdError ? <p className="error-text">{mdError}</p> : null}
-          {gdocError ? <p className="error-text">{gdocError}</p> : null}
-          {gdocMessage ? <p className="success-text">{gdocMessage}</p> : null}
+          {actionError ? <p className="error-text">{actionError}</p> : null}
+          {actionMessage ? <p className="success-text">{actionMessage}</p> : null}
           <button
             className="btn-secondary"
             type="button"
-            onClick={handleDownloadDocx}
-            disabled={isDownloadingDocx || !canEmbed}
-          >
-            {isDownloadingDocx ? "Preparing…" : "Download DOCX"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={handleDownloadMd}
-            disabled={isDownloadingMd || !canEmbed}
+            onClick={() => handleDownload("md")}
+            disabled={!canExport || isDownloadingMd}
           >
             {isDownloadingMd ? "Preparing…" : "Download MD"}
           </button>
           <button
             className="btn-secondary"
             type="button"
-            onClick={handleExportGoogleDoc}
-            disabled={isExportingGdoc || !canEmbed || isLoadingGoogleStatus}
+            onClick={() => handleDownload("docx")}
+            disabled={!canExport || isDownloadingDocx}
           >
-            {isExportingGdoc
-              ? "Exporting…"
-              : !isGoogleConnected
-              ? "Connect Google Drive"
-              : googleDocUrl
-              ? "Open Google Doc"
-              : "Export to Google Docs"}
+            {isDownloadingDocx ? "Preparing…" : "Download DOCX"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleExportGoogleDoc}
+            disabled={!canExport || isExportingGdoc}
+          >
+            {isExportingGdoc ? "Exporting…" : "Export to Google Docs"}
           </button>
           <button
             className="btn-secondary"
             type="button"
             onClick={handleEmbed}
-            disabled={!canEmbed || isEmbedding}
+            disabled={!canExport || isEmbedding}
           >
             {isEmbedding ? "Embedding…" : "Add to vector store"}
           </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={() => setIsPolling(true)}
-            disabled={isPolling}
-          >
+          <button className="btn-secondary" type="button" onClick={() => setIsPolling(true)} disabled={isPolling}>
             {isPolling ? "Polling…" : "Refresh"}
           </button>
         </div>
       </section>
 
       {run.error ? <p className="error-text">{run.error}</p> : null}
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <h2 style={{ margin: 0 }}>AI Feedback</h2>
+        {feedback ? (
+          <div className="feedback-grid" style={{ display: "grid", gap: "0.75rem" }}>
+            <FeedbackList title="Uncertain areas" items={feedback.uncertain_areas} tone="warn" />
+            <FeedbackList title="Low confidence" items={feedback.low_confidence_sections} tone="info" />
+            <FeedbackList title="Missing information" items={feedback.missing_information} tone="neutral" />
+            {feedback.notes ? <p className="muted">{feedback.notes}</p> : null}
+          </div>
+        ) : (
+          <p className="muted">No feedback captured for this run.</p>
+        )}
+      </section>
 
       <section className="run-tracker__metadata">
         <h2>Included files</h2>
@@ -543,110 +345,45 @@ export function RunStatusTracker({ runId, initialRun, initialSteps, initialArtif
           </tbody>
         </table>
       </section>
+    </div>
+  );
+}
 
-      <section>
-        <h2>Artifacts</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Created</th>
-              <th>Meta</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {artifacts.length === 0 ? (
-              <tr>
-                <td colSpan={4}>No artifacts recorded.</td>
-              </tr>
-            ) : (
-              artifacts.map((artifact) => (
-                <tr key={artifact.id} className={previewArtifactId === artifact.id ? "table-row--active" : undefined}>
-                  <td>{artifact.kind}</td>
-                  <td>{formatDate(artifact.created_at)}</td>
-                  <td>{summarizeMeta(artifact.meta)}</td>
-                  <td className="artifact-actions">
-                    <button
-                      className="btn-secondary"
-                      type="button"
-                      onClick={() => setPreviewArtifactId(artifact.id)}
-                    >
-                      View
-                    </button>
-                    <a className="btn-primary" href={`/artifacts/${artifact.id}/download`}>
-                      Download
-                    </a>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      {previewArtifact ? (
-        <section className="artifact-preview">
-          <div className="artifact-preview__header">
-            <h3>Preview: {previewArtifact.kind}</h3>
-            <span>{previewArtifact.path}</span>
-          </div>
-          <p className="artifact-preview__meta">
-            <span>Created: {formatDate(previewArtifact.created_at)}</span>
-            <span>Content type: {previewContentType || "unknown"}</span>
-          </p>
-          <details className="artifact-preview__meta-detail">
-            <summary>Metadata</summary>
-            <pre>{JSON.stringify(previewArtifact.meta, null, 2)}</pre>
-          </details>
-          {isPreviewLoading ? (
-            <p>Loading preview…</p>
-          ) : previewError ? (
-            <p className="error-text">{previewError}</p>
-          ) : previewContent ? (
-            <div className="preview-pane">
-              {shouldRenderMarkdown(previewArtifact, previewContentType) ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewContent}</ReactMarkdown>
-              ) : (
-                <pre>{previewContent}</pre>
-              )}
-            </div>
-          ) : (
-            <p>No preview available.</p>
-          )}
-        </section>
-      ) : null}
+function FeedbackList({
+  title,
+  items,
+  tone = "neutral"
+}: {
+  title: string;
+  items?: string[] | null;
+  tone?: "warn" | "info" | "neutral";
+}) {
+  if (!items || items.length === 0) {
+    return null;
+  }
+  const toneClass =
+    tone === "warn" ? "chip chip--warning" : tone === "info" ? "chip chip--info" : "chip";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <span className={toneClass}>{title}</span>
+      </div>
+      <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+        {items.map((item, idx) => (
+          <li key={idx}>{item}</li>
+        ))}
+      </ul>
     </div>
   );
 }
 
 function formatDate(value?: string | null): string {
-  if (!value) {
-    return "—";
-  }
+  if (!value) return "—";
   try {
     return new Date(value).toLocaleString();
   } catch (err) {
     return value;
   }
-}
-
-function summarizeMeta(meta: Record<string, unknown>): string {
-  if (!meta || Object.keys(meta).length === 0) {
-    return "—";
-  }
-  const summary = JSON.stringify(meta);
-  return summary.length > 80 ? `${summary.slice(0, 77)}…` : summary;
-}
-
-function shouldRenderMarkdown(artifact: Artifact, contentType: string): boolean {
-  if (contentType.includes("markdown")) {
-    return true;
-  }
-  if (contentType.includes("text")) {
-    return artifact.path.endsWith(".md") || artifact.path.endsWith(".markdown");
-  }
-  return false;
 }
 
 export default RunStatusTracker;
