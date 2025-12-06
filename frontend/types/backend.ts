@@ -74,6 +74,12 @@ export interface Artifact {
   created_at: string;
 }
 
+export interface Team {
+  id: string;
+  name: string;
+  owner_id: string;
+}
+
 export interface SearchResult {
   embedding_id: string;
   project_id?: string | null;

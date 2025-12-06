@@ -28,7 +28,7 @@ export default async function RunDetailPage({ params }: RunPageProps) {
   }
 
   const stepsResponse = await apiFetchJson<RunStep[]>(`/runs/${params.runId}/steps`, {
-    throwIfUnauthorized: false
+      throwIfUnauthorized: false
   });
 
   const steps = stepsResponse.data ?? [];

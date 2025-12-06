@@ -742,7 +742,7 @@ INSTRUCTIONS:
                     text_parts.append(block.text)
         
         return "\n".join(text_parts)
-
+    
     def _parse_oneshot_response(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
         """Parse oneshot JSON payload into (markdown, feedback)."""
         text = response_text.strip()

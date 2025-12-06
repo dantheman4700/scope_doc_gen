@@ -22,13 +22,29 @@ export function CreateProjectModal() {
   const [form, setForm] = useState<FormState>({ name: "", description: "", team_id: null });
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [teamsError, setTeamsError] = useState<string | null>(null);
+  const [teamsLoading, setTeamsLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (isOpen) {
-      fetch("/api/teams")
-        .then((res) => res.json())
-        .then((data) => setTeams(data))
-        .catch(() => setTeams([]));
+      setTeamsLoading(true);
+      setTeamsError(null);
+      fetch("/api/teams", { cache: "no-store" })
+        .then(async (res) => {
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            const detail = body?.detail || `Failed to load teams (${res.status})`;
+            throw new Error(detail);
+          }
+          return res.json();
+        })
+        .then((data) => setTeams(Array.isArray(data) ? data : []))
+        .catch((err: Error) => {
+          console.error("Failed to load teams", err);
+          setTeams([]);
+          setTeamsError(err.message);
+        })
+        .finally(() => setTeamsLoading(false));
     }
   }, [isOpen]);
 
@@ -135,7 +151,7 @@ export function CreateProjectModal() {
                   disabled={isSubmitting}
                 />
               </div>
-              {teams.length > 0 && (
+              {teams.length > 0 ? (
                 <div className="form-field">
                   <label htmlFor="project-team">Team</label>
                   <select
@@ -143,17 +159,18 @@ export function CreateProjectModal() {
                     name="team"
                     value={form.team_id ?? ""}
                     onChange={(event) => setForm((prev) => ({ ...prev, team_id: event.target.value || null }))}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || teamsLoading}
                   >
-                    <option value="">My Projects</option>
+                    <option value="">My projects (no team)</option>
                     {teams.map((team) => (
                       <option key={team.id} value={team.id}>
                         {team.name}
                       </option>
                     ))}
                   </select>
+                  {teamsError ? <small className="error-text">{teamsError}</small> : null}
                 </div>
-              )}
+              ) : null}
               {error ? <p className="error-text">{error}</p> : null}
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={closeModal} type="button" disabled={isSubmitting}>

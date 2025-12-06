@@ -183,7 +183,7 @@ def import_directory_to_vector_store(
 
     store = VectorStore(vector_dsn, embedding_dim=embedder.dim or 1536)
     try:
-        store.ensure_schema()
+    store.ensure_schema()
     except Exception as exc:
         print(f"[ERROR] Failed to ensure vector store schema: {exc}")
         raise

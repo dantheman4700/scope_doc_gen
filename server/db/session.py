@@ -23,11 +23,11 @@ class Base(DeclarativeBase):
 # Connection pool configuration for Supabase Session mode.
 # With 2 uvicorn workers, each worker has its own pool.
 # Supabase Session mode typically allows ~20 connections per project.
-# Settings: 3 base + 2 overflow = 5 per worker = 10 total max.
+# Settings: 2 base + 1 overflow = 3 per worker = 6 total max.
 # VectorStore pools are lazy (min=0) so no connections at startup.
-# Total worst case: 10 SQLAlchemy + 8 VectorStore = 18 connections (under limit).
-_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "3"))
-_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "2"))
+# Total worst case: 6 SQLAlchemy + 4 VectorStore = 10 connections (well under limit).
+_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "2"))
+_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "1"))
 _POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))  # seconds to wait for a connection
 _POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "300"))  # seconds before recycling a connection
 

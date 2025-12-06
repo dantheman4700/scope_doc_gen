@@ -50,13 +50,13 @@ class VectorStore:
             self._pool = ConnectionPool(
                 self.dsn,
                 min_size=0,  # LAZY - don't create connections until needed
-                max_size=4,  # Reasonable max for vector operations
+                max_size=2,  # Reduced for Supabase Pro compatibility (2 per worker = 4 total)
                 max_waiting=10,
                 max_idle=300,  # 5 minutes
                 reconnect_timeout=30,
                 kwargs={"row_factory": dict_row},
             )
-            logger.info("VectorStore connection pool initialized (min=0, max=4, lazy)")
+            logger.info("VectorStore connection pool initialized (min=0, max=2, lazy)")
         except Exception as exc:
             logger.error(f"Failed to create VectorStore connection pool: {exc}")
             raise VectorStoreError(f"Connection pool initialization failed: {exc}") from exc

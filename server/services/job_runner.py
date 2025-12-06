@@ -272,6 +272,8 @@ class JobRegistry:
             # Update params first, then status - ensures consistency
             if feedback:
                 job.params["feedback"] = feedback
+            # Mark in-memory status first so live queries see completion immediately
+            self._mark_success(job, result_rel)
             self._update_run(job.id, params=job.params)
             self._update_run(job.id, status=JobState.SUCCESS, finished_at=datetime.utcnow(), result_path=result_rel)
             artifact_ids = self._record_artifacts(job.id, job.project_id, paths, result_rel)

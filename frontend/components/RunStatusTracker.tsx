@@ -130,7 +130,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     setActionError(null);
     setActionMessage(null);
     setIsExportingGdoc(true);
-    try {
+      try {
       const response = await fetch(`/api/runs/${runId}/export-google-doc`, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as {
         doc_url?: string;
@@ -138,21 +138,21 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         status?: string;
         detail?: string;
       };
-      if (!response.ok) {
+        if (!response.ok) {
         const detail = payload.detail ?? `Export failed (${response.status})`;
         throw new Error(detail);
-      }
+        }
       const docUrl = payload.doc_url;
       if (docUrl) {
         window.open(docUrl, "_blank", "noopener,noreferrer");
         setActionMessage("Opened Google Doc");
       } else {
         setActionMessage("Google Doc created");
-      }
-    } catch (err) {
+        }
+      } catch (err) {
       const message = err instanceof Error ? err.message : "Export to Google Docs failed";
       setActionError(message);
-    } finally {
+      } finally {
       setIsExportingGdoc(false);
     }
   };
@@ -345,7 +345,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           </tbody>
         </table>
       </section>
-    </div>
+          </div>
   );
 }
 
@@ -367,7 +367,7 @@ function FeedbackList({
     <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
         <span className={toneClass}>{title}</span>
-      </div>
+            </div>
       <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
         {items.map((item, idx) => (
           <li key={idx}>{item}</li>
