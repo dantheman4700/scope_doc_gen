@@ -107,6 +107,20 @@ Key variables:
 - Run `alembic upgrade head` during deployment.
 - Optionally front the FastAPI + Next.js apps with Nginx and systemd services (see upcoming deployment docs).
 
+## Current Deployment (server) – subject to change
+
+- Location: production copy lives at `/opt/scope_doc_gen` (backend) and `/opt/scope_doc_gen/frontend` (frontend). Development happens in `/home/dan/projects/scope_doc_gen`; changes are pulled or copied into `/opt/scope_doc_gen`.
+- Process manager: systemd runs two units as user `dan`:
+  - `scope-backend.service` → `/opt/scope_doc_gen/venv/bin/uvicorn server.api:app --host 127.0.0.1 --port 8010 --workers 2`, env file `/opt/scope_doc_gen/server/.env`.
+  - `scope-frontend.service` → `next start -p 3021` from `/opt/scope_doc_gen/frontend`, env file `/opt/scope_doc_gen/frontend/.env.local`, Node 18.
+- Update/redeploy steps (manual):
+  1) Sync code to `/opt/scope_doc_gen` (e.g., `git pull` or copy from `/home/dan/projects/scope_doc_gen`).
+  2) Backend deps: `. /opt/scope_doc_gen/venv/bin/activate && pip install -r requirements.txt`.
+  3) Frontend build: `cd /opt/scope_doc_gen/frontend && npm install && npm run build`.
+  4) Restart services: `sudo systemctl restart scope-backend scope-frontend`.
+  5) Verify: `systemctl status scope-backend scope-frontend` and check `journalctl -u scope-backend/-frontend`.
+- Behavior: services do not auto-reload on code changes; a rebuild + restart is required after updates or env changes.
+
 ## License
 
 [Specify your license here]
