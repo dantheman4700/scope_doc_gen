@@ -24,8 +24,8 @@ class Base(DeclarativeBase):
 # With 2 uvicorn workers, each worker has its own pool.
 # Supabase Session mode typically allows ~20 connections per project.
 # Settings: 2 base + 1 overflow = 3 per worker = 6 total max.
-# VectorStore pools are lazy (min=0) so no connections at startup.
-# Total worst case: 6 SQLAlchemy + 4 VectorStore = 10 connections (well under limit).
+# VectorStore now uses this same pool (no separate pool), so total is just 6 connections.
+# This pool is shared by both SQLAlchemy ORM operations and VectorStore pgvector operations.
 _POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "2"))
 _MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "1"))
 _POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))  # seconds to wait for a connection

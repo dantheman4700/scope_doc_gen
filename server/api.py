@@ -15,6 +15,7 @@ from server.core.config import (
     VECTOR_STORE_DSN,
 )
 from server.core.history_profiles import EMBED_DIMENSIONS
+from server.db.session import engine
 
 from .routes import (
     auth_router,
@@ -43,15 +44,16 @@ logger = logging.getLogger("scope.api")
 def _attach_vector_store(app: FastAPI) -> None:
     """Initialise the pgvector-backed store if configured."""
 
-    if not VECTOR_STORE_DSN:
-        logger.info("Vector store not configured (no VECTOR_STORE_DSN)")
+    if not DATABASE_DSN:
+        logger.info("Vector store not configured (no DATABASE_DSN)")
         app.state.vector_store = None
         return
 
     try:
         embedding_dim = EMBED_DIMENSIONS.get(HISTORY_EMBEDDING_MODEL, 1536)
-        logger.info("Initializing vector store with dimension %s", embedding_dim)
-        store = VectorStore(VECTOR_STORE_DSN, embedding_dim=embedding_dim)
+        logger.info("Initializing vector store with dimension %s (using SQLAlchemy pool)", embedding_dim)
+        # Use SQLAlchemy engine - shares connection pool with rest of app
+        store = VectorStore(engine, embedding_dim=embedding_dim)
         # Don't call ensure_schema() at startup - it forces connection creation
         # Schema will be created lazily on first use
         app.state.vector_store = store
@@ -103,14 +105,9 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """Clean up resources on application shutdown."""
-        vector_store = getattr(app.state, "vector_store", None)
-        if vector_store is not None and hasattr(vector_store, "_pool"):
-            try:
-                logger.info("Closing VectorStore connection pool...")
-                vector_store._pool.close()
-                logger.info("VectorStore connection pool closed")
-            except Exception as exc:
-                logger.error(f"Error closing VectorStore pool: {exc}")
+        # VectorStore uses SQLAlchemy engine pool, which is managed by the engine
+        # No cleanup needed here
+        pass
 
     @app.middleware("http")
     async def error_logging_middleware(request: Request, call_next):

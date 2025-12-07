@@ -119,25 +119,30 @@ def format_reference_block(results: List[dict]) -> Optional[str]:
 class HistoryRetriever:
     def __init__(
         self,
-        dsn: str,
+        vector_store: VectorStore,
         model_name: str,
         top_n: int = 12,
         min_similarity: float = 0.2,
         extractor: Optional[object] = None,
-        vector_store: Optional[VectorStore] = None,
     ) -> None:
+        """
+        Initialize HistoryRetriever.
+        
+        Args:
+            vector_store: VectorStore instance (must be provided - uses shared connection pool)
+            model_name: Embedding model name
+            top_n: Number of similar historical scopes to retrieve
+            min_similarity: Minimum similarity threshold
+            extractor: Optional extractor for building query phrases
+        """
+        if vector_store is None:
+            raise ValueError("HistoryRetriever requires a VectorStore instance")
+        
+        self.vector_store = vector_store
         self.embedder = ProfileEmbedder(model_name)
         self.top_n = top_n
         self.min_similarity = min_similarity
         self.extractor = extractor
-        # Reuse provided VectorStore or create new one (should reuse shared instance)
-        if vector_store is not None:
-            self.vector_store = vector_store
-        else:
-            # For OpenAI embeddings we know the dimensions
-            embedding_dim = getattr(self.embedder, "dim", None) or 1536
-            self.vector_store = VectorStore(dsn, embedding_dim=embedding_dim)
-            self.vector_store.ensure_schema()
 
     def fetch_reference_block(
         self,

@@ -8,11 +8,9 @@ from typing import Iterable, Optional, Sequence
 from uuid import UUID, uuid4
 from contextlib import contextmanager
 
-import psycopg
 from pgvector.psycopg import Vector, register_vector
-from psycopg.rows import dict_row
 from psycopg.types.json import Json
-from psycopg_pool import ConnectionPool
+from sqlalchemy.engine import Engine
 
 
 logger = logging.getLogger(__name__)
@@ -33,52 +31,48 @@ class VectorRecord:
 
 
 class VectorStore:
-    """Thin wrapper around pgvector operations with connection pooling."""
+    """Thin wrapper around pgvector operations using SQLAlchemy connection pool.
+    
+    All operations use the same database connection pool as the rest of the application,
+    ensuring consistent connection management and avoiding connection exhaustion.
+    """
 
-    def __init__(self, dsn: str, *, embedding_dim: int = 1536) -> None:
-        if not dsn:
-            raise ValueError("VectorStore requires a valid DATABASE_DSN")
-        self.dsn = dsn
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        embedding_dim: int = 1536,
+    ) -> None:
+        """
+        Initialize VectorStore.
+        
+        Args:
+            engine: SQLAlchemy Engine (must be provided - uses shared connection pool)
+            embedding_dim: Dimension of embedding vectors
+        """
+        if not isinstance(engine, Engine):
+            raise ValueError("VectorStore requires a SQLAlchemy Engine instance")
+        
+        self.engine = engine
         self.embedding_dim = embedding_dim
         self._schema_ensured = False  # Track if schema has been created
-        
-        # Create a connection pool for VectorStore operations
-        # LAZY initialization (min_size=0) to avoid exhausting Supabase on startup
-        # Pool size: 0 min (lazy), 2 max - very conservative for Supabase Session mode
-        # These connections are separate from SQLAlchemy pool
-        try:
-            self._pool = ConnectionPool(
-                self.dsn,
-                min_size=0,  # LAZY - don't create connections until needed
-                max_size=2,  # Reduced for Supabase Pro compatibility (2 per worker = 4 total)
-                max_waiting=10,
-                max_idle=300,  # 5 minutes
-                reconnect_timeout=30,
-                kwargs={"row_factory": dict_row},
-            )
-            logger.info("VectorStore connection pool initialized (min=0, max=2, lazy)")
-        except Exception as exc:
-            logger.error(f"Failed to create VectorStore connection pool: {exc}")
-            raise VectorStoreError(f"Connection pool initialization failed: {exc}") from exc
-
-    def __del__(self):
-        """Clean up connection pool on destruction."""
-        if hasattr(self, "_pool"):
-            try:
-                self._pool.close()
-            except Exception:
-                pass  # Ignore errors during cleanup
+        logger.info("VectorStore initialized using SQLAlchemy connection pool (shared with app)")
 
     @contextmanager
     def _connect(self):
-        """Get a connection from the pool with vector support registered."""
+        """Get a connection from SQLAlchemy pool with vector support registered.
+        
+        Uses the same connection pool as all other database operations in the application.
+        """
         conn = None
         try:
-            conn = self._pool.getconn()
-            register_vector(conn)
+            # Get raw psycopg connection from SQLAlchemy pool
+            # This uses the same pool as SQLAlchemy ORM operations
+            conn = self.engine.raw_connection()
+            register_vector(conn)  # Enable pgvector support
             yield conn
         except Exception:
-            # If connection is bad, close it instead of returning to pool
+            # If connection is bad, close it
             if conn is not None:
                 try:
                     conn.close()
@@ -86,21 +80,13 @@ class VectorStore:
                     pass
             raise
         finally:
-            # Only return connection to pool if it's still open and valid
+            # Return connection to SQLAlchemy pool
+            # raw_connection() returns a proxy that handles cleanup automatically
             if conn is not None:
                 try:
-                    # Check if connection is still open before returning
-                    if not conn.closed:
-                        self._pool.putconn(conn)
-                    # If closed, don't return to pool - it will be replaced automatically
+                    conn.close()
                 except Exception:
-                    # If putconn fails, connection is likely bad - don't return it
-                    # The pool will create a new connection when needed
-                    try:
-                        if not conn.closed:
-                            conn.close()
-                    except Exception:
-                        pass
+                    pass
 
     # ------------------------------------------------------------------
     # Schema helpers
