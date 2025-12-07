@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import sys
 import base64
@@ -16,6 +17,8 @@ from .config import (
     WEB_SEARCH_MAX_USES,
     WEB_SEARCH_ALLOWED_DOMAINS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeExtractor:
@@ -204,7 +207,10 @@ class ClaudeExtractor:
             "Keep feedback concise and actionable. "
             "IMPORTANT: Here are transcripts and example files and other supporting information. "
             "Here is the scope template to follow. We are creating this job in the specified solution type. "
-            "Change nothing about the scope structure or organization, follow it to a T, and create the scope based on our inputs and desired solution type."
+            "Change nothing about the scope structure or organization, follow it to a T, and create the scope based on our inputs and desired solution type. "
+            "CRITICAL: When generating markdown tables, preserve the exact table structure from the template. "
+            "Tables must use proper markdown table format with pipe separators (|) and alignment markers (| :---- |) in the separator row. "
+            "Do not convert tables to plain text or lists - maintain them as markdown tables."
         )
 
         # Build user content with the specific oneshot prompt format
@@ -239,61 +245,95 @@ class ClaudeExtractor:
         ]
 
         # Use structured outputs (beta) to force JSON shape
-        response = self.client.beta.messages.create(
-            model=self.model,
-            max_tokens=MAX_TOKENS,
-            temperature=max(0.2, TEMPERATURE),
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": user_blocks,
-                }
-            ],
-            betas=["structured-outputs-2025-11-13"],
-            output_format={
-                "type": "json_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "markdown": {"type": "string"},
-                        "feedback": {
-                            "type": "object",
-                            "properties": {
-                                "uncertain_areas": {"type": "array", "items": {"type": "string"}},
-                                "low_confidence_sections": {"type": "array", "items": {"type": "string"}},
-                                "missing_information": {"type": "array", "items": {"type": "string"}},
-                                "notes": {"type": "string"},
+        logger.info(f"Calling Claude API for oneshot generation (model={self.model}, timeout=300s)")
+        try:
+            response = self.client.beta.messages.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                temperature=max(0.2, TEMPERATURE),
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": user_blocks,
+                    }
+                ],
+                betas=["structured-outputs-2025-11-13"],
+                output_format={
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "markdown": {"type": "string"},
+                            "feedback": {
+                                "type": "object",
+                                "properties": {
+                                    "uncertain_areas": {"type": "array", "items": {"type": "string"}},
+                                    "low_confidence_sections": {"type": "array", "items": {"type": "string"}},
+                                    "missing_information": {"type": "array", "items": {"type": "string"}},
+                                    "notes": {"type": "string"},
+                                },
+                                "required": [
+                                    "uncertain_areas",
+                                    "low_confidence_sections",
+                                    "missing_information",
+                                ],
+                                "additionalProperties": False,
                             },
-                            "required": [
-                                "uncertain_areas",
-                                "low_confidence_sections",
-                                "missing_information",
-                            ],
-                            "additionalProperties": False,
                         },
+                        "required": ["markdown", "feedback"],
+                        "additionalProperties": False,
                     },
-                    "required": ["markdown", "feedback"],
-                    "additionalProperties": False,
                 },
-            },
-        )
+            )
+            logger.info("Claude API call completed successfully")
+        except Exception as api_exc:
+            logger.exception(f"Claude API call failed: {api_exc}")
+            raise
+
+        # Check for refusal or max_tokens - structured outputs may not match schema in these cases
+        stop_reason = getattr(response, 'stop_reason', None)
+        logger.info(f"Claude response stop_reason: {stop_reason}")
+        
+        if stop_reason == "refusal":
+            logger.warning("Claude refused the request - output may not match schema")
+            raise ValueError("Claude refused to generate the scope document. This may be due to safety filters or content policy.")
+        elif stop_reason == "max_tokens":
+            logger.warning("Response hit max_tokens limit - output may be incomplete or invalid")
+            raise ValueError(f"Response was cut off due to token limit ({MAX_TOKENS} tokens). The generated content may be incomplete. Try increasing MAX_TOKENS or reducing input size.")
 
         # Structured output returns JSON in the first content block
         response_text = ""
         try:
+            if not hasattr(response, 'content') or not response.content:
+                raise ValueError("Claude response has no content blocks")
             block = response.content[0]
             # text is present in structured outputs
             if hasattr(block, "text"):
                 response_text = block.text or ""
+            elif hasattr(block, "type") and block.type == "text":
+                response_text = getattr(block, "text", "") or ""
             else:
+                # Fallback: try to get any string representation
                 response_text = str(block)
-        except Exception:
+            logger.info(f"Extracted response text, length: {len(response_text)}")
+            if response_text:
+                # Log first 200 chars for debugging
+                preview = response_text[:200] if len(response_text) > 200 else response_text
+                logger.debug(f"Response preview: {preview}...")
+        except Exception as parse_exc:
+            logger.exception(f"Failed to extract response text: {parse_exc}")
+            # Try to get raw response for debugging
+            logger.error(f"Response object type: {type(response)}, attributes: {dir(response)}")
             response_text = ""
 
+        if not response_text:
+            raise ValueError("Claude response was empty or could not be parsed")
+            
         markdown, feedback = self._parse_oneshot_response(response_text)
         if not markdown:
             raise ValueError("Claude response did not include markdown content")
+        logger.info(f"Successfully parsed oneshot response, markdown length: {len(markdown)}")
         return markdown, feedback
 
     def generate_feedback(
@@ -746,26 +786,57 @@ INSTRUCTIONS:
     def _parse_oneshot_response(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
         """Parse oneshot JSON payload into (markdown, feedback)."""
         text = response_text.strip()
+        
+        # Log first 500 chars for debugging
+        preview = text[:500] if len(text) > 500 else text
+        logger.debug(f"Parsing oneshot response (length: {len(text)}, preview: {preview}...)")
+        
+        data = None
         try:
             data = json.loads(text)
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger.warning(f"Initial JSON parse failed: {e}, attempting to extract JSON from response")
             # Attempt to strip code fences if present
             fence_start = text.find("```")
             fence_end = text.rfind("```")
             if fence_start != -1 and fence_end != -1 and fence_end > fence_start:
                 fenced = text[fence_start + 3:fence_end].strip()
+                # Remove language identifier if present (e.g., ```json)
+                if fenced.startswith("json"):
+                    fenced = fenced[4:].strip()
+                elif fenced.startswith("{"):
+                    pass  # Already starts with JSON
                 try:
                     data = json.loads(fenced)
-                except Exception:
+                    logger.info("Successfully extracted JSON from code fence")
+                except json.JSONDecodeError as e2:
+                    logger.warning(f"JSON parse from code fence failed: {e2}")
                     data = None
             else:
-                data = None
+                # Try to find JSON object in the text
+                json_start = text.find("{")
+                json_end = text.rfind("}")
+                if json_start != -1 and json_end != -1 and json_end > json_start:
+                    json_snippet = text[json_start:json_end + 1]
+                    try:
+                        data = json.loads(json_snippet)
+                        logger.info("Successfully extracted JSON object from response")
+                    except json.JSONDecodeError as e3:
+                        logger.warning(f"JSON extraction failed: {e3}")
+                        data = None
 
         if not isinstance(data, dict):
-            raise ValueError("Claude oneshot response is not valid JSON with markdown field")
+            # Log the full response for debugging (truncated if too long)
+            error_preview = text[:1000] if len(text) > 1000 else text
+            logger.error(f"Failed to parse oneshot response as JSON. Response preview: {error_preview}")
+            raise ValueError(
+                f"Claude oneshot response is not valid JSON with markdown field. "
+                f"Response length: {len(text)}, starts with: {text[:100]}"
+            )
 
         markdown = str(data.get("markdown", "")).strip()
         if not markdown:
+            logger.error(f"Response parsed as JSON but missing markdown field. Keys: {list(data.keys())}")
             raise ValueError("Claude oneshot response missing 'markdown' content")
 
         feedback: Dict[str, Any] = {}

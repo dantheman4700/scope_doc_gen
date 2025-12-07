@@ -276,8 +276,18 @@ class DocumentIngester:
 
     def _process_docx(self, file_path: Path) -> Dict[str, str]:
         doc = Document(file_path)
+        
+        # Extract paragraphs
         paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        content = "\n".join(paragraphs)
+        content_parts = paragraphs.copy()
+        
+        # Extract tables and convert to markdown format
+        for table in doc.tables:
+            table_markdown = self._table_to_markdown(table)
+            if table_markdown:
+                content_parts.append(table_markdown)
+        
+        content = "\n\n".join(content_parts)
         media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         size_bytes = file_path.stat().st_size
         can_upload = size_bytes <= MAX_NATIVE_PDF_BYTES
@@ -296,6 +306,42 @@ class DocumentIngester:
             'can_upload': can_upload,
             'content_hash': self._hash_file(file_path),
         }
+    
+    def _table_to_markdown(self, table) -> str:
+        """Convert a DOCX table to markdown format."""
+        if not table.rows:
+            return ""
+        
+        markdown_lines = []
+        
+        # Extract header row (first row)
+        header_row = table.rows[0]
+        header_cells = [self._get_cell_text(cell).strip() for cell in header_row.cells]
+        markdown_lines.append("| " + " | ".join(header_cells) + " |")
+        
+        # Add separator row
+        separator = "| " + " | ".join(["---"] * len(header_cells)) + " |"
+        markdown_lines.append(separator)
+        
+        # Extract data rows (skip first row if it was the header)
+        for row in table.rows[1:]:
+            cells = [self._get_cell_text(cell).strip() for cell in row.cells]
+            # Pad cells to match header length if needed
+            while len(cells) < len(header_cells):
+                cells.append("")
+            # Truncate if too many cells
+            cells = cells[:len(header_cells)]
+            markdown_lines.append("| " + " | ".join(cells) + " |")
+        
+        return "\n".join(markdown_lines)
+    
+    def _get_cell_text(self, cell) -> str:
+        """Extract text from a table cell, handling nested paragraphs."""
+        text_parts = []
+        for paragraph in cell.paragraphs:
+            if paragraph.text.strip():
+                text_parts.append(paragraph.text.strip())
+        return " ".join(text_parts) if text_parts else ""
 
     def _process_xlsx(self, file_path: Path) -> Dict[str, str]:
         """Extract a text summary from an Excel workbook (no native upload)."""

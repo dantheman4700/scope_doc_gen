@@ -69,6 +69,9 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
   const [isPollingRuns, setIsPollingRuns] = useState<boolean>(true);
+  const [templateId, setTemplateId] = useState<string>("");
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string; mimeType: string; webViewLink: string }>>([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState<boolean>(false);
 
   const selectedFiles = useMemo(
     () => files.filter((file) => selectedFileIds.has(file.id)),
@@ -124,6 +127,34 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       window.clearInterval(interval);
     };
   }, [isPollingRuns, project.id]);
+
+  // Fetch templates when one-shot mode is selected
+  useEffect(() => {
+    if (runMode === "oneshot" && templates.length === 0 && !isLoadingTemplates) {
+      setIsLoadingTemplates(true);
+      fetch(`/api/projects/${project.id}/runs/templates`)
+        .then((response) => {
+          if (!response.ok) {
+            // Silently fail - templates are optional
+            return [];
+          }
+          return response.json();
+        })
+        .then((data) => {
+          setTemplates(data || []);
+          if (data && data.length > 0 && !templateId) {
+            // Auto-select first template
+            setTemplateId(data[0].id);
+          }
+        })
+        .catch(() => {
+          // Silently fail - templates are optional
+        })
+        .finally(() => {
+          setIsLoadingTemplates(false);
+        });
+    }
+  }, [runMode, project.id, templates.length, isLoadingTemplates, templateId]);
 
   const handleSummarize = useCallback(
     async (fileId: string) => {
@@ -200,7 +231,8 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       instructions: instructions.trim() || undefined,
       enable_vector_store: isOneshot ? false : vectorStoreEnabled,
       enable_web_search: isOneshot ? false : researchMode !== "none",
-      included_file_ids: Array.from(selectedFileIds)
+      included_file_ids: Array.from(selectedFileIds),
+      template_id: isOneshot && templateId ? templateId : undefined,
     };
 
     try {
@@ -401,12 +433,49 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 id="run-mode"
                 name="run_mode"
                 value={runMode}
-                onChange={(event) => setRunMode(event.target.value)}
+                onChange={(event) => {
+                  setRunMode(event.target.value);
+                  if (event.target.value !== "oneshot") {
+                    setTemplateId("");
+                  }
+                }}
               >
                 <option value="full">Full (ingest + extraction)</option>
                 <option value="oneshot">One shot (template + docs, no research/vector store)</option>
               </select>
             </div>
+            {runMode === "oneshot" && (
+              <div className="form-field">
+                <label htmlFor="template">Template</label>
+                <select
+                  id="template"
+                  name="template"
+                  value={templateId}
+                  onChange={(event) => setTemplateId(event.target.value)}
+                  disabled={isLoadingTemplates}
+                >
+                  {isLoadingTemplates ? (
+                    <option value="">Loading templates...</option>
+                  ) : templates.length === 0 ? (
+                    <option value="">No templates available</option>
+                  ) : (
+                    <>
+                      <option value="">Select a template...</option>
+                      {templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+                {templates.length === 0 && !isLoadingTemplates && (
+                  <small style={{ color: "#6b7280" }}>
+                    Templates not configured. Using default template.
+                  </small>
+                )}
+              </div>
+            )}
             <div className="form-field">
               <label htmlFor="research-mode">Research</label>
               <select

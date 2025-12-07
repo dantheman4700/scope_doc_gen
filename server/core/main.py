@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Callable, Any
+
+logger = logging.getLogger(__name__)
 
 
 StepCallback = Callable[[str, str, Optional[str]], None]
@@ -510,9 +513,16 @@ class ScopeDocGenerator:
         project_identifier: Optional[str] = None,
         instructions: Optional[str] = None,
         step_callback: Optional[StepCallback] = None,
+        template_id: Optional[str] = None,
     ) -> str:
         """
         Generate a scope document in one shot (no research, no vector store, no variable extraction).
+        
+        Args:
+            project_identifier: Optional project identifier hint
+            instructions: Optional additional instructions
+            step_callback: Optional callback for step notifications
+            template_id: Optional Google Drive file ID for template (if not provided, uses default template)
         """
         print("="*80)
         print("SCOPE DOCUMENT GENERATOR (ONE SHOT)")
@@ -564,19 +574,44 @@ class ScopeDocGenerator:
 
         print(f"[OK] Combined document length: {len(combined)} characters")
 
-        # Step 3: One-shot generation (no research / history / vector store)
+        # Step 3: Load template (from Google Drive if template_id provided, otherwise default)
+        template_text = self.renderer.template_content
+        if template_id:
+            try:
+                from server.core.config import GOOGLE_SERVICE_ACCOUNT_FILE, GOOGLE_TEMPLATE_FOLDER_ID
+                from server.services.google_drive_templates import GoogleDriveTemplateService
+                
+                notify("template", "started", f"Loading template {template_id}")
+                logger.info(f"Loading template from Google Drive: {template_id}")
+                
+                template_service = GoogleDriveTemplateService(
+                    service_account_file=GOOGLE_SERVICE_ACCOUNT_FILE,
+                    folder_id=GOOGLE_TEMPLATE_FOLDER_ID,
+                )
+                template_text = template_service.download_template(template_id)
+                notify("template", "completed", "Template loaded from Google Drive")
+                logger.info(f"Successfully loaded template from Google Drive, length: {len(template_text)}")
+            except Exception as template_exc:
+                logger.exception(f"Failed to load template from Google Drive: {template_exc}")
+                notify("template", "failed", str(template_exc))
+                raise ValueError(f"Failed to load template from Google Drive: {template_exc}")
+
+        # Step 4: One-shot generation (no research / history / vector store)
         notify("extract", "started", "oneshot")
+        logger.info("Starting oneshot markdown generation")
         markdown = ""
         feedback = {}
         try:
             markdown, feedback = self.extractor.generate_oneshot_markdown(
                 combined_documents=combined,
-                template_text=self.renderer.template_content,
+                template_text=template_text,
                 instructions=instructions,
                 solution_hint=project_identifier,
             )
+            logger.info(f"Oneshot generation completed, markdown length: {len(markdown)}")
             notify("extract", "completed", "oneshot")
         except Exception as exc:
+            logger.exception(f"Oneshot generation failed: {exc}")
             notify("extract", "failed", str(exc))
             raise
 
@@ -592,7 +627,7 @@ class ScopeDocGenerator:
             except Exception as fb_err:
                 print(f"[WARN] Could not save feedback: {fb_err}")
 
-        # Step 4: Render/save markdown
+        # Step 5: Render/save markdown
         notify("render", "started", None)
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

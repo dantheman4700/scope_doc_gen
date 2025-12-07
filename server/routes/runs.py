@@ -16,11 +16,18 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from server.core.research import ResearchMode
-from server.core.config import DATA_ROOT, HISTORY_EMBEDDING_MODEL, GOOGLE_OAUTH_SCOPES
+from server.core.config import (
+    DATA_ROOT,
+    HISTORY_EMBEDDING_MODEL,
+    GOOGLE_OAUTH_SCOPES,
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    GOOGLE_TEMPLATE_FOLDER_ID,
+)
 from server.core.history_profiles import ProfileEmbedder
 from server.core.markdown_to_docx import markdown_to_docx_bytes
 
 from ..services import JobRegistry, RunOptions
+from ..services.google_drive_templates import GoogleDriveTemplateService
 from ..dependencies import db_session, get_storage
 from ..db import models
 from ..storage.projects import ensure_project_structure
@@ -35,6 +42,13 @@ run_router = APIRouter(prefix="/runs", tags=["runs"])
 logger = logging.getLogger(__name__)
 
 
+class TemplateResponse(BaseModel):
+    id: str
+    name: str
+    mimeType: str
+    webViewLink: str
+
+
 class CreateRunRequest(BaseModel):
     run_mode: str = Field("full", pattern="^(full|fast|oneshot)$")
     research_mode: ResearchMode = ResearchMode.QUICK
@@ -46,6 +60,7 @@ class CreateRunRequest(BaseModel):
     included_file_ids: List[UUID] = Field(default_factory=list)
     parent_run_id: Optional[UUID] = None
     what_to_change: Optional[str] = None
+    template_id: Optional[str] = None  # Google Drive file ID for one-shot mode templates
 
 
 class RunStatusResponse(BaseModel):
@@ -193,6 +208,32 @@ async def list_runs(
     return responses
 
 
+@router.get("/templates", response_model=List[TemplateResponse])
+async def list_templates() -> List[TemplateResponse]:
+    """
+    List available templates from Google Drive folder for one-shot mode.
+    """
+    if not GOOGLE_SERVICE_ACCOUNT_FILE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Drive template service not configured (GOOGLE_SERVICE_ACCOUNT_FILE not set)",
+        )
+
+    try:
+        template_service = GoogleDriveTemplateService(
+            service_account_file=GOOGLE_SERVICE_ACCOUNT_FILE,
+            folder_id=GOOGLE_TEMPLATE_FOLDER_ID,
+        )
+        templates = template_service.list_templates()
+        return [TemplateResponse(**t) for t in templates]
+    except Exception as exc:
+        logger.exception("Failed to list templates from Google Drive")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to list templates: {str(exc)}",
+        )
+
+
 @router.post("/", response_model=RunStatusResponse, status_code=status.HTTP_201_CREATED)
 async def create_run(project_id: str, payload: CreateRunRequest, request: Request) -> RunStatusResponse:
     registry = _registry(request)
@@ -215,6 +256,7 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
         included_file_ids=included_ids,
         parent_run_id=parent_run_id,
         variables_delta=payload.what_to_change,
+        template_id=payload.template_id,
     )
     job = registry.create_job(project_id, options)
     data = job.to_dict()

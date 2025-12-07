@@ -52,6 +52,7 @@ class RunOptions:
     included_file_ids: List[str] = field(default_factory=list)
     parent_run_id: Optional[str] = None
     variables_delta: Optional[str] = None
+    template_id: Optional[str] = None  # Google Drive file ID for one-shot mode templates
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +66,7 @@ class RunOptions:
             "included_file_ids": self.included_file_ids,
             "parent_run_id": self.parent_run_id,
             "variables_delta": self.variables_delta,
+            "template_id": self.template_id,
         }
 
 
@@ -183,6 +185,7 @@ class JobRegistry:
                 included_ids=options.included_file_ids,
             )
         except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.exception(f"Job {job_id} failed during sync: {exc}")
             self._finish_run_step(sync_step_id, "failed", str(exc))
             self._mark_failed(job, str(exc))
             self._update_run(job.id, status=JobState.FAILED, finished_at=datetime.utcnow(), error=str(exc))
@@ -229,6 +232,8 @@ class JobRegistry:
         
         self._mark_running(job)
         self._update_run(job.id, status=JobState.RUNNING, started_at=datetime.utcnow())
+        
+        LOGGER.info(f"Starting job {job_id} in {options.run_mode} mode")
 
         try:
             generator = ScopeDocGenerator(
@@ -246,6 +251,7 @@ class JobRegistry:
                     project_identifier=options.project_identifier,
                     instructions=options.instructions_override,
                     step_callback=step_callback,
+                    template_id=options.template_id,
                 )
                 feedback = generator.last_feedback
             else:
@@ -283,6 +289,7 @@ class JobRegistry:
                 job.params.setdefault("extracted_variables_artifact_id", str(variables_artifact_id))
             # Embedding now triggered manually via API endpoint for consistency
         except Exception as exc:  # pragma: no cover - execution safeguard
+            LOGGER.exception(f"Job {job_id} failed: {exc}")
             self._mark_failed(job, str(exc))
             self._update_run(job.id, status=JobState.FAILED, finished_at=datetime.utcnow(), error=str(exc))
 

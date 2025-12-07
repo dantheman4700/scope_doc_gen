@@ -129,6 +129,10 @@ GOOGLE_OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# Google Drive service account for template access (shared folder)
+GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+GOOGLE_TEMPLATE_FOLDER_ID = os.getenv("GOOGLE_TEMPLATE_FOLDER_ID", "1Lrh_qb2hnVtwrnfq7A-RqGKIYAo4cGYM")
+
 
 _default_cors_origins = [
     "http://localhost:3000",
@@ -187,7 +191,7 @@ DATABASE_DSN = _sqlalchemy_driver_dsn(_DATABASE_DSN)
 VECTOR_STORE_DSN = _psycopg_dsn(_DATABASE_DSN)
 
 # Processing settings
-MAX_TOKENS = 8000
+MAX_TOKENS = 32000  # Increased from 8000 to support longer scope documents
 TEMPERATURE = 0.3  # Lower temperature for more consistent output
 
 # Tier-based rate limit guidance (conservative; see docs)
