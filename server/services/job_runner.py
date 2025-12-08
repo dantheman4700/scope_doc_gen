@@ -296,19 +296,26 @@ class JobRegistry:
         self._update_run(job.id, status=JobState.RUNNING, started_at=datetime.utcnow())
         
         LOGGER.info(f"Starting job {job_id} in {options.run_mode} mode")
+        LOGGER.info(f"Job options: research_mode={options.research_mode}, enable_vector_store={options.enable_vector_store}, enable_web_search={options.enable_web_search}")
 
         try:
             # Create history retriever if vector search is enabled and we have a vector store
             history_retriever = None
-            if options.enable_vector_store and self._vector_store and HISTORY_ENABLED:
-                try:
-                    history_retriever = HistoryRetriever(
-                        vector_store=self._vector_store,
-                        model_name=HISTORY_EMBEDDING_MODEL,
-                        top_n=HISTORY_TOPN,
-                    )
-                except Exception as hr_exc:
-                    LOGGER.warning(f"Failed to initialize history retriever: {hr_exc}")
+            if options.enable_vector_store:
+                if not HISTORY_ENABLED:
+                    LOGGER.warning("Vector search requested but HISTORY_ENABLED=false in .env - skipping vector search")
+                elif not self._vector_store:
+                    LOGGER.warning("Vector search requested but vector store not initialized - skipping")
+                else:
+                    try:
+                        history_retriever = HistoryRetriever(
+                            vector_store=self._vector_store,
+                            model_name=HISTORY_EMBEDDING_MODEL,
+                            top_n=HISTORY_TOPN,
+                        )
+                        LOGGER.info("History retriever initialized for vector search")
+                    except Exception as hr_exc:
+                        LOGGER.warning(f"Failed to initialize history retriever: {hr_exc}")
 
             generator = ScopeDocGenerator(
                 input_dir=paths.input_dir,

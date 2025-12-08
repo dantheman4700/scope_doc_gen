@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 // Default settings values
 const DEFAULT_SETTINGS: TeamSettings = {
@@ -45,15 +46,39 @@ interface Team {
   owner_id: string;
 }
 
-export default function SettingsPage() {
+interface GoogleConnectionStatus {
+  connected: boolean;
+  email: string | null;
+  can_export: boolean;
+}
+
+// Inner component that uses searchParams
+function SettingsContent() {
+  const searchParams = useSearchParams();
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [settings, setSettings] = useState<TeamSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [googleStatus, setGoogleStatus] = useState<GoogleConnectionStatus | null>(null);
+  const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
 
-  // Load teams on mount
+  // Check for Google OAuth callback messages
+  useEffect(() => {
+    if (searchParams.get("google_connected") === "true") {
+      setMessage({ type: "success", text: "Google account connected successfully!" });
+      // Refresh google status
+      fetch("/api/google-oauth/status")
+        .then((res) => res.json())
+        .then(setGoogleStatus)
+        .catch(() => {});
+    } else if (searchParams.get("google_error")) {
+      setMessage({ type: "error", text: `Google connection failed: ${searchParams.get("google_error")}` });
+    }
+  }, [searchParams]);
+
+  // Load teams and Google status on mount
   useEffect(() => {
     fetch("/api/teams")
       .then((res) => res.json())
@@ -68,6 +93,12 @@ export default function SettingsPage() {
         setTeams([]);
         setIsLoading(false);
       });
+    
+    // Load Google connection status
+    fetch("/api/google-oauth/status")
+      .then((res) => res.json())
+      .then(setGoogleStatus)
+      .catch(() => setGoogleStatus(null));
   }, []);
 
   // Load settings when team changes - merge with defaults
@@ -255,6 +286,87 @@ export default function SettingsPage() {
       <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
 
       <section>
+        <h2>Google Account Connection</h2>
+        <p style={{ color: "#e5e7eb", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
+          Connect your Google account to export scopes directly to your Google Drive.
+        </p>
+
+        <div style={{ 
+          padding: "1rem", 
+          background: googleStatus?.connected ? "#064e3b" : "#1f2937", 
+          borderRadius: "0.5rem",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "1rem"
+        }}>
+          <div>
+            {googleStatus?.connected ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981" }}>
+                  <span>✓</span>
+                  <strong>Google Account Connected</strong>
+                </div>
+                {googleStatus.email && (
+                  <small style={{ color: "#9ca3af" }}>{googleStatus.email}</small>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ color: "#9ca3af" }}>No Google account connected</div>
+                <small style={{ color: "#6b7280" }}>Connect to enable direct exports to your Drive</small>
+              </>
+            )}
+          </div>
+
+          {googleStatus?.connected ? (
+            <button
+              className="btn-secondary"
+              onClick={async () => {
+                setIsConnectingGoogle(true);
+                try {
+                  const res = await fetch("/api/google-oauth/disconnect", { method: "POST" });
+                  if (res.ok) {
+                    setGoogleStatus({ connected: false, email: null, can_export: false });
+                    setMessage({ type: "success", text: "Google account disconnected" });
+                  }
+                } catch {
+                  setMessage({ type: "error", text: "Failed to disconnect" });
+                } finally {
+                  setIsConnectingGoogle(false);
+                }
+              }}
+              disabled={isConnectingGoogle}
+            >
+              Disconnect
+            </button>
+          ) : (
+            <button
+              className="btn-primary"
+              onClick={async () => {
+                setIsConnectingGoogle(true);
+                try {
+                  const res = await fetch("/api/google-oauth/connect");
+                  const data = await res.json();
+                  if (data.authorization_url) {
+                    window.location.href = data.authorization_url;
+                  }
+                } catch {
+                  setMessage({ type: "error", text: "Failed to initiate connection" });
+                  setIsConnectingGoogle(false);
+                }
+              }}
+              disabled={isConnectingGoogle}
+            >
+              {isConnectingGoogle ? "Connecting..." : "Connect Google Account"}
+            </button>
+          )}
+        </div>
+      </section>
+
+      <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
+
+      <section>
         <h2>Image Generation</h2>
         <p style={{ color: "#9ca3af", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
           Configure Nano Banana Pro (Gemini) image generation for scope documents.
@@ -374,5 +486,19 @@ export default function SettingsPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+// Wrapper component with Suspense boundary for useSearchParams
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={
+      <div className="card" style={{ maxWidth: 800, margin: "0 auto" }}>
+        <h1>Team Settings</h1>
+        <p>Loading...</p>
+      </div>
+    }>
+      <SettingsContent />
+    </Suspense>
   );
 }

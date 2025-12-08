@@ -1,250 +1,269 @@
-"""Google OAuth endpoints for connecting user accounts to Docs/Drive."""
+"""
+API routes for Google OAuth user account connection.
+"""
 
-from __future__ import annotations
-
+import logging
 import secrets
-from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode
+from uuid import UUID
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from server.core.config import (
-    GOOGLE_OAUTH_CLIENT_ID,
-    GOOGLE_OAUTH_CLIENT_SECRET,
-    GOOGLE_OAUTH_REDIRECT_URI,
-    GOOGLE_OAUTH_SCOPES,
+from server.db import models
+from ..dependencies import db_session
+from .auth import get_current_user
+from server.services.google_user_oauth import (
+    get_authorization_url,
+    exchange_code_for_tokens,
+    is_token_valid,
+    revoke_tokens,
 )
 
-from ..db import models
-from ..dependencies import db_session
-from .auth import SessionUser, get_current_user
+logger = logging.getLogger(__name__)
+
+google_oauth_router = APIRouter(prefix="/google-oauth", tags=["google-oauth"])
+# Alias for backwards compatibility with __init__.py
+router = google_oauth_router
 
 
-router = APIRouter(prefix="/google", tags=["google"])
+def get_user_google_access_token(user_id: UUID, db: Session) -> Optional[str]:
+    """
+    Get the Google access token for a user from their team settings.
+    
+    Args:
+        user_id: The user's UUID
+        db: Database session
+        
+    Returns:
+        The access token string or None if not available
+    """
+    user = db.get(models.User, user_id)
+    if not user or not user.team_id:
+        return None
+    
+    team = db.get(models.Team, user.team_id)
+    if not team:
+        return None
+    
+    settings = team.settings or {}
+    google_tokens = settings.get("google_tokens")
+    
+    if not google_tokens or not is_token_valid(google_tokens):
+        return None
+    
+    return google_tokens.get("access_token")
 
 
-class GoogleStatusResponse(BaseModel):
+class GoogleConnectionStatus(BaseModel):
     connected: bool
+    email: Optional[str] = None
+    can_export: bool = False
 
 
-class GoogleAuthUrlResponse(BaseModel):
-    url: str
+class DisconnectResponse(BaseModel):
+    success: bool
+    message: str
 
 
-class GoogleCallbackRequest(BaseModel):
+@google_oauth_router.get("/status", response_model=GoogleConnectionStatus)
+async def get_google_connection_status(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(db_session),
+):
+    """Check if the current user has a connected Google account."""
+    # Get user's Google tokens from their settings
+    user_record = db.get(models.User, user.id)
+    if not user_record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Check if user has google_tokens in their profile
+    google_tokens = getattr(user_record, "google_tokens", None) or {}
+    
+    connected = is_token_valid(google_tokens)
+    
+    return GoogleConnectionStatus(
+        connected=connected,
+        email=google_tokens.get("email") if connected else None,
+        can_export=connected,
+    )
+
+
+@google_oauth_router.get("/connect")
+async def initiate_google_connection(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(db_session),
+):
+    """
+    Initiate Google OAuth flow.
+    Returns the authorization URL to redirect the user to.
+    """
+    # Generate state parameter for CSRF protection
+    state = f"{user.id}:{secrets.token_urlsafe(32)}"
+    
+    # Store state temporarily (in production, use Redis or similar)
+    # For now, we'll encode the user ID in the state
+    
+    authorization_url, _ = get_authorization_url(state=state)
+    
+    return {"authorization_url": authorization_url}
+
+
+@google_oauth_router.get("/callback")
+async def google_oauth_callback(
+    code: str = Query(...),
+    state: str = Query(...),
+    error: Optional[str] = Query(None),
+    db: Session = Depends(db_session),
+):
+    """
+    Handle Google OAuth callback.
+    This endpoint is called by Google after user authorization.
+    """
+    if error:
+        logger.error(f"Google OAuth error: {error}")
+        # Redirect to settings with error
+        return RedirectResponse(url="/settings?google_error=" + error)
+    
+    try:
+        # Extract user ID from state
+        user_id_str = state.split(":")[0]
+        user_id = UUID(user_id_str)
+    except (ValueError, IndexError):
+        logger.error(f"Invalid state parameter: {state}")
+        return RedirectResponse(url="/settings?google_error=invalid_state")
+    
+    # Get user
+    user = db.get(models.User, user_id)
+    if not user:
+        return RedirectResponse(url="/settings?google_error=user_not_found")
+    
+    try:
+        # Exchange code for tokens
+        tokens = exchange_code_for_tokens(code)
+        
+        # Store tokens in user record
+        # We need to add a google_tokens column to the users table
+        # For now, we'll store in the team settings
+        if user.team_id:
+            team = db.get(models.Team, user.team_id)
+            if team:
+                settings = team.settings or {}
+                settings["google_tokens"] = tokens
+                settings["google_connected_user_id"] = str(user.id)
+                team.settings = settings
+                db.commit()
+                logger.info(f"Google tokens stored for team {team.id}")
+        
+        return RedirectResponse(url="/settings?google_connected=true")
+        
+    except Exception as e:
+        logger.exception(f"Failed to exchange code for tokens: {e}")
+        return RedirectResponse(url="/settings?google_error=token_exchange_failed")
+
+
+@google_oauth_router.post("/disconnect", response_model=DisconnectResponse)
+async def disconnect_google_account(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(db_session),
+):
+    """Disconnect the user's Google account."""
+    if not user.team_id:
+        return DisconnectResponse(success=True, message="No Google account connected")
+    
+    team = db.get(models.Team, user.team_id)
+    if not team:
+        return DisconnectResponse(success=True, message="No Google account connected")
+    
+    settings = team.settings or {}
+    google_tokens = settings.get("google_tokens")
+    
+    if google_tokens:
+        # Revoke tokens
+        revoke_tokens(google_tokens)
+        
+        # Remove from settings
+        settings.pop("google_tokens", None)
+        settings.pop("google_connected_user_id", None)
+        team.settings = settings
+        db.commit()
+        
+        logger.info(f"Google account disconnected for team {team.id}")
+    
+    return DisconnectResponse(success=True, message="Google account disconnected")
+
+
+# Secondary router for the legacy /google/oauth/callback endpoint
+# that the frontend page.tsx posts to
+legacy_google_oauth_router = APIRouter(prefix="/google/oauth", tags=["google-oauth"])
+
+
+class OAuthCallbackRequest(BaseModel):
     code: str
     state: str
 
 
-def _ensure_oauth_config() -> None:
-    missing = []
-    if not GOOGLE_OAUTH_CLIENT_ID:
-        missing.append("GOOGLE_OAUTH_CLIENT_ID")
-    if not GOOGLE_OAUTH_CLIENT_SECRET:
-        missing.append("GOOGLE_OAUTH_CLIENT_SECRET")
-    if not GOOGLE_OAUTH_REDIRECT_URI:
-        missing.append("GOOGLE_OAUTH_REDIRECT_URI")
-    if missing:
-        joined = ", ".join(missing)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Google OAuth not configured: missing {joined}",
-        )
+class OAuthCallbackResponse(BaseModel):
+    connected: bool
+    detail: Optional[str] = None
 
 
-def _build_oauth_url(state: str) -> str:
-    params = {
-        "client_id": GOOGLE_OAUTH_CLIENT_ID,
-        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
-        "response_type": "code",
-        "scope": " ".join(GOOGLE_OAUTH_SCOPES),
-        "access_type": "offline",
-        "include_granted_scopes": "true",
-        # Explicit consent prompt the first time to ensure we get a refresh token.
-        "prompt": "consent",
-        "state": state,
-    }
-    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-
-
-@router.get("/status", response_model=GoogleStatusResponse)
-async def google_status(
-    current_user: SessionUser = Depends(get_current_user),
+@legacy_google_oauth_router.post("/callback", response_model=OAuthCallbackResponse)
+async def google_oauth_callback_post(
+    payload: OAuthCallbackRequest,
     db: Session = Depends(db_session),
-) -> GoogleStatusResponse:
-    """Return whether the current user has connected Google Drive."""
-
-    record = db.get(models.GoogleAuth, current_user.id)
-    connected = bool(record and record.refresh_token)
-    return GoogleStatusResponse(connected=connected)
-
-
-@router.get("/auth-url", response_model=GoogleAuthUrlResponse)
-async def google_auth_url(
-    current_user: SessionUser = Depends(get_current_user),
-    db: Session = Depends(db_session),
-) -> GoogleAuthUrlResponse:
-    """Return a Google OAuth URL for the current user to connect their account."""
-
-    _ensure_oauth_config()
-
-    state = secrets.token_urlsafe(32)
-    now = datetime.utcnow()
-
-    record = db.get(models.GoogleAuth, current_user.id)
-    if record is None:
-        record = models.GoogleAuth(user_id=current_user.id)
-        db.add(record)
-
-    record.state = state
-    record.state_created_at = now
-    db.commit()
-
-    return GoogleAuthUrlResponse(url=_build_oauth_url(state))
-
-
-@router.post("/oauth/callback", response_model=GoogleStatusResponse)
-async def google_oauth_callback(
-    payload: GoogleCallbackRequest,
-    request: Request,
-    current_user: SessionUser = Depends(get_current_user),
-    db: Session = Depends(db_session),
-) -> GoogleStatusResponse:
-    """Handle OAuth callback: exchange code for tokens and persist them."""
-
-    _ensure_oauth_config()
-
-    record = db.get(models.GoogleAuth, current_user.id)
-    if record is None or not record.state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth state not found")
-
-    # Basic CSRF/state validation with a short TTL window.
-    if payload.state != record.state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
-    if record.state_created_at and record.state_created_at < datetime.utcnow() - timedelta(minutes=10):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth state has expired")
-
-    # Clear state immediately to prevent replay even if token exchange fails.
-    record.state = None
-    record.state_created_at = None
-    db.commit()
-
-    data = {
-        "client_id": GOOGLE_OAUTH_CLIENT_ID or "",
-        "client_secret": GOOGLE_OAUTH_CLIENT_SECRET or "",
-        "code": payload.code,
-        "grant_type": "authorization_code",
-        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI or "",
-    }
-
+):
+    """
+    Handle Google OAuth callback via POST from frontend.
+    This is called by the frontend page after Google redirects back.
+    """
     try:
-        token_resp = httpx.post("https://oauth2.googleapis.com/token", data=data, timeout=15)
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to contact Google token endpoint: {exc}",
-        )
-
-    if token_resp.status_code != 200:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Google token exchange failed ({token_resp.status_code})",
-        )
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token") or record.refresh_token
-    expires_in = token_data.get("expires_in")
-    scope = token_data.get("scope")
-
-    if not access_token:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Google token exchange did not return an access token",
-        )
-
-    # Persist tokens
-    record.access_token = access_token
-    record.refresh_token = refresh_token
-    record.scope = scope
-    if expires_in:
-        record.token_expiry = datetime.utcnow() + timedelta(seconds=int(expires_in))
-    else:
-        record.token_expiry = None
-
-    db.add(record)
-    db.commit()
-
-    return GoogleStatusResponse(connected=bool(record.refresh_token))
-
-
-def get_user_google_access_token(
-    user_id,
-    db: Session,
-) -> str:
-    """
-    Helper used by other routes to obtain a fresh access token for the user.
-
-    Performs a refresh using the stored refresh token when necessary and updates
-    the database accordingly.
-    """
-
-    _ensure_oauth_config()
-
-    record = db.get(models.GoogleAuth, user_id)
-    if record is None or not record.refresh_token:
+        # Extract user ID from state
+        user_id_str = payload.state.split(":")[0]
+        user_id = UUID(user_id_str)
+    except (ValueError, IndexError):
+        logger.error(f"Invalid state parameter: {payload.state}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google account not connected",
+            detail="Invalid state parameter"
         )
-
-    now = datetime.utcnow()
-    if record.access_token and record.token_expiry and record.token_expiry > now + timedelta(seconds=60):
-        return record.access_token
-
-    data = {
-        "client_id": GOOGLE_OAUTH_CLIENT_ID or "",
-        "client_secret": GOOGLE_OAUTH_CLIENT_SECRET or "",
-        "grant_type": "refresh_token",
-        "refresh_token": record.refresh_token,
-    }
-
+    
+    # Get user
+    user = db.get(models.User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
     try:
-        token_resp = httpx.post("https://oauth2.googleapis.com/token", data=data, timeout=15)
-        token_resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
+        # Exchange code for tokens
+        tokens = exchange_code_for_tokens(payload.code)
+        
+        # Store tokens in team settings
+        if user.team_id:
+            team = db.get(models.Team, user.team_id)
+            if team:
+                settings = team.settings or {}
+                settings["google_tokens"] = tokens
+                settings["google_connected_user_id"] = str(user.id)
+                team.settings = settings
+                db.commit()
+                logger.info(f"Google tokens stored for team {team.id}")
+                return OAuthCallbackResponse(connected=True)
+        
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to refresh Google access token: {exc.response.status_code}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no team"
         )
-    except httpx.HTTPError as exc:
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to exchange code for tokens: {e}")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to refresh Google access token: {exc}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Token exchange failed: {str(e)}"
         )
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token")
-    expires_in = token_data.get("expires_in")
-
-    if not access_token:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Google token refresh did not return an access token",
-        )
-
-    record.access_token = access_token
-    if expires_in:
-        record.token_expiry = datetime.utcnow() + timedelta(seconds=int(expires_in))
-    else:
-        record.token_expiry = None
-    db.add(record)
-    db.commit()
-
-    return access_token
-
-

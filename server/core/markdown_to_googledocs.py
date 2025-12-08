@@ -2,15 +2,141 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Google API client types are imported for type checking and clarity.
 try:
     from googleapiclient.errors import HttpError  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     HttpError = Exception  # fallback for environments without googleapiclient
+
+# Try to import markgdoc for better markdown conversion
+try:
+    import markgdoc
+    MARKGDOC_AVAILABLE = True
+    logger.info("markgdoc available for enhanced markdown conversion")
+except ImportError:
+    MARKGDOC_AVAILABLE = False
+    logger.warning("markgdoc not available, using legacy markdown conversion")
+
+
+def create_google_doc_from_markdown(
+    content: str,
+    title: str,
+    drive_service,
+    docs_service,
+    folder_id: Optional[str] = None,
+) -> str:
+    """
+    Create a Google Doc from markdown content using pre-authenticated clients.
+
+    This uses markgdoc for high-quality conversion when available, with a
+    fallback to the legacy custom parser.
+
+    Args:
+        content: Markdown content to convert
+        title: Title for the Google Doc
+        drive_service: An authenticated Drive v3 client
+        docs_service: An authenticated Docs v1 client
+        folder_id: Optional Google Drive folder ID to place the document in
+
+    Returns:
+        The Google Doc ID (can be used to construct a URL)
+    """
+    if MARKGDOC_AVAILABLE:
+        return _create_with_markgdoc(content, title, drive_service, docs_service, folder_id)
+    else:
+        return _create_with_legacy(content, title, drive_service, docs_service, folder_id)
+
+
+def _create_with_markgdoc(
+    content: str,
+    title: str,
+    drive_service,
+    docs_service,
+    folder_id: Optional[str] = None,
+) -> str:
+    """Create Google Doc using markgdoc library for better formatting."""
+    # First create an empty doc via Drive API
+    file_metadata: Dict[str, Any] = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    if folder_id:
+        file_metadata["parents"] = [folder_id]
+
+    doc_file = drive_service.files().create(body=file_metadata, fields="id, parents").execute()
+    document_id = doc_file.get("id")
+
+    if not document_id:
+        raise RuntimeError("Failed to create Google Doc via Drive API")
+
+    try:
+        # Use markgdoc to convert markdown to Google Docs requests
+        # markgdoc.markdown_to_requests returns a list of batch update requests
+        requests = markgdoc.markdown_to_requests(content)
+        
+        if requests:
+            docs_service.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": requests},
+            ).execute()
+        
+        logger.info(f"Created Google Doc {document_id} using markgdoc")
+        return document_id
+        
+    except Exception as e:
+        logger.warning(f"markgdoc conversion failed, falling back to legacy: {e}")
+        # Try to populate with legacy method
+        try:
+            requests = _parse_markdown_to_requests(content)
+            if requests:
+                docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": requests},
+                ).execute()
+        except Exception as legacy_err:
+            logger.error(f"Legacy conversion also failed: {legacy_err}")
+        return document_id
+
+
+def _create_with_legacy(
+    content: str,
+    title: str,
+    drive_service,
+    docs_service,
+    folder_id: Optional[str] = None,
+) -> str:
+    """Create Google Doc using legacy custom parser."""
+    file_metadata: Dict[str, Any] = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    if folder_id:
+        file_metadata["parents"] = [folder_id]
+
+    doc_file = drive_service.files().create(body=file_metadata, fields="id, parents").execute()
+    document_id = doc_file.get("id")
+
+    if not document_id:
+        raise RuntimeError("Failed to create Google Doc via Drive API")
+
+    # Parse markdown and create requests
+    requests = _parse_markdown_to_requests(content)
+
+    if requests:
+        docs_service.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": requests},
+        ).execute()
+
+    logger.info(f"Created Google Doc {document_id} using legacy parser")
+    return document_id
 
 
 def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
@@ -28,6 +154,8 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
     
     in_code_block = False
     code_buffer: List[str] = []
+    in_table = False
+    table_buffer: List[str] = []
     
     def _extract_bold_ranges(text: str) -> Tuple[str, List[Tuple[int, int]]]:
         """Extract bold markers and return clean text with ranges."""
@@ -57,6 +185,32 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
         
         return clean_text, bold_ranges
     
+    def _extract_italic_ranges(text: str) -> Tuple[str, List[Tuple[int, int]]]:
+        """Extract italic markers and return clean text with ranges."""
+        italic_ranges: List[Tuple[int, int]] = []
+        clean_text = ""
+        i = 0
+        
+        while i < len(text):
+            # Look for *text* or _text_ (but not ** or __)
+            match = re.search(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", text[i:])
+            if match:
+                before = text[i:i+match.start()]
+                clean_text += before
+                start_pos = len(clean_text)
+                
+                italic_text = match.group(1) or match.group(2)
+                clean_text += italic_text
+                end_pos = len(clean_text)
+                
+                italic_ranges.append((start_pos, end_pos))
+                i += match.end()
+            else:
+                clean_text += text[i:]
+                break
+        
+        return clean_text, italic_ranges
+    
     for line in lines:
         stripped = line.strip()
         
@@ -78,6 +232,28 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
             code_buffer.append(line)
             continue
         
+        # Handle tables (convert to plain text for now)
+        if stripped.startswith("|"):
+            if not in_table:
+                in_table = True
+            table_buffer.append(stripped)
+            continue
+        elif in_table:
+            # End of table
+            if table_buffer:
+                # Convert table to simple text format
+                for row in table_buffer:
+                    if not row.startswith("|---") and not row.startswith("| ---"):
+                        cells = [c.strip() for c in row.split("|")[1:-1]]
+                        if cells:
+                            document_parts.append({
+                                "text": " | ".join(cells),
+                                "type": "paragraph",
+                                "bold_ranges": []
+                            })
+                table_buffer.clear()
+            in_table = False
+        
         # Empty line
         if not stripped:
             document_parts.append({"text": "\n", "type": "paragraph"})
@@ -93,6 +269,19 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
                     "text": clean_text,
                     "type": "heading",
                     "level": min(level, 6),
+                    "bold_ranges": bold_ranges
+                })
+            continue
+        
+        # Numbered lists
+        match = re.match(r"^(\d+)\.\s+(.+)$", stripped)
+        if match:
+            list_text = match.group(2).strip()
+            if list_text:
+                clean_text, bold_ranges = _extract_bold_ranges(list_text)
+                document_parts.append({
+                    "text": clean_text,
+                    "type": "numbered",
                     "bold_ranges": bold_ranges
                 })
             continue
@@ -121,6 +310,15 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
                 })
             continue
         
+        # Horizontal rules
+        if stripped in ["---", "***", "___"]:
+            document_parts.append({
+                "text": "─" * 50,
+                "type": "paragraph",
+                "bold_ranges": []
+            })
+            continue
+        
         # Regular paragraph
         clean_text, bold_ranges = _extract_bold_ranges(stripped)
         document_parts.append({
@@ -135,6 +333,18 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
             "text": "\n".join(code_buffer),
             "type": "code"
         })
+    
+    # Handle any remaining table
+    if table_buffer:
+        for row in table_buffer:
+            if not row.startswith("|---") and not row.startswith("| ---"):
+                cells = [c.strip() for c in row.split("|")[1:-1]]
+                if cells:
+                    document_parts.append({
+                        "text": " | ".join(cells),
+                        "type": "paragraph",
+                        "bold_ranges": []
+                    })
     
     # Build full text and track formatting positions
     full_text = ""
@@ -154,7 +364,8 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
             "level": part.get("level"),
             "bold_ranges": part.get("bold_ranges", []),
             "is_code": part["type"] == "code",
-            "is_bullet": part["type"] == "bullet"
+            "is_bullet": part["type"] == "bullet",
+            "is_numbered": part["type"] == "numbered"
         })
         
         current_index += len(text) + 1  # +1 for newline
@@ -197,13 +408,25 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
                 }
             })
         
+        # Numbered lists
+        if info["is_numbered"]:
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "bulletPreset": "NUMBERED_DECIMAL_NESTED"
+                }
+            })
+        
         # Code blocks
         if info["is_code"]:
             requests.append({
                 "updateTextStyle": {
                     "range": {"startIndex": start, "endIndex": end},
-                    "textStyle": {"weightedFontFamily": {"fontFamily": "Courier New"}},
-                    "fields": "weightedFontFamily"
+                    "textStyle": {
+                        "weightedFontFamily": {"fontFamily": "Courier New"},
+                        "backgroundColor": {"color": {"rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}}}
+                    },
+                    "fields": "weightedFontFamily,backgroundColor"
                 }
             })
         
@@ -222,57 +445,6 @@ def _parse_markdown_to_requests(content: str) -> List[Dict[str, Any]]:
     return requests
 
 
-def create_google_doc_from_markdown(
-    content: str,
-    title: str,
-    drive_service,
-    docs_service,
-    folder_id: Optional[str] = None,
-) -> str:
-    """
-    Create a Google Doc from markdown content using pre-authenticated clients.
-
-    This uses a \"Drive-first\" approach: create the Doc via Drive.files.create
-    (optionally inside a target folder), then populate it with the Docs API.
-
-    Args:
-        content: Markdown content to convert
-        title: Title for the Google Doc
-        drive_service: An authenticated Drive v3 client
-        docs_service: An authenticated Docs v1 client
-        folder_id: Optional Google Drive folder ID to place the document in
-
-    Returns:
-        The Google Doc ID (can be used to construct a URL)
-    """
-
-    file_metadata: Dict[str, Any] = {
-        "name": title,
-        "mimeType": "application/vnd.google-apps.document",
-    }
-    if folder_id:
-        file_metadata["parents"] = [folder_id]
-
-    doc_file = drive_service.files().create(body=file_metadata, fields="id, parents").execute()
-    document_id = doc_file.get("id")
-
-    if not document_id:
-        raise RuntimeError("Failed to create Google Doc via Drive API")
-
-    # Parse markdown and create requests
-    requests = _parse_markdown_to_requests(content)
-
-    if requests:
-        # Execute batch update to fill in and format the document
-        docs_service.documents().batchUpdate(
-            documentId=document_id,
-            body={"requests": requests},
-        ).execute()
-
-    return document_id
-
-
 def get_google_doc_url(document_id: str) -> str:
     """Get the shareable URL for a Google Doc."""
     return f"https://docs.google.com/document/d/{document_id}/edit"
-

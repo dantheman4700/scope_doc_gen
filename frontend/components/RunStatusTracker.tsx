@@ -434,24 +434,20 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </div>
           </div>
           <div style={{ 
-            display: "flex", 
-            justifyContent: "center", 
-            alignItems: "center",
-            padding: "0.5rem", 
+            display: "block",
+            padding: "0", 
             background: "#0a0a14", 
             borderRadius: "0.5rem",
-            minHeight: "400px",
             overflow: "hidden"
           }}>
             <img 
               src={solutionGraphicUrl} 
               alt="Solution Architecture Graphic" 
               style={{ 
+                display: "block",
                 width: "100%",
                 height: "auto",
-                maxHeight: "70vh",
-                objectFit: "contain",
-                borderRadius: "0.375rem",
+                borderRadius: "0.5rem",
                 cursor: "zoom-in"
               }}
               onClick={() => {

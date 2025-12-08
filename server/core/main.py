@@ -538,7 +538,9 @@ class ScopeDocGenerator:
         print("="*80)
         print("SCOPE DOCUMENT GENERATOR (ONE SHOT)")
         print("="*80)
-
+        logger.info(f"Oneshot params: research_mode={research_mode}, enable_vector_store={enable_vector_store}, "
+                   f"enable_web_search={enable_web_search}, enable_image={enable_image_generation}")
+        
         self.last_feedback = None
         attachments: List[Dict[str, str]] = []
 

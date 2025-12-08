@@ -29,6 +29,7 @@ from .routes import (
     teams_router,
     google_router,
 )
+from .routes.google_oauth import google_oauth_router, legacy_google_oauth_router
 from .services import VectorStore, VectorStoreError, JobRegistry
 
 # Basic logging config (stdout) if not already configured by the host.
@@ -98,6 +99,8 @@ def create_app() -> FastAPI:
     app.include_router(system_router)
     app.include_router(teams_router)
     app.include_router(google_router)
+    app.include_router(google_oauth_router)
+    app.include_router(legacy_google_oauth_router)
 
     _attach_vector_store(app)
     _attach_job_registry(app)
