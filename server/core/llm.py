@@ -417,8 +417,11 @@ class ClaudeExtractor:
             "2. 'questions_for_client': Follow-up questions that should be asked to the client "
             "to fill in gaps or clarify requirements (e.g., business priorities, edge cases, "
             "preferences, constraints).\n\n"
-            "Return ONLY valid JSON with these two keys, each containing a list of 3-7 concise questions. "
-            "Focus on actionable, specific questions that would materially improve the scope."
+            "IMPORTANT: Generate as many or as few questions as genuinely needed. Only include questions "
+            "you are confident would materially improve the scope. If the scope is comprehensive and clear, "
+            "it's okay to have fewer questions. If there are many gaps, include more. Quality over quantity.\n\n"
+            "Return ONLY valid JSON with these two keys, each containing a list of questions. "
+            "Each question should be specific, actionable, and add real value."
         )
 
         user_prompt = f"SCOPE DOCUMENT:\n\n{scope_markdown}\n\nGenerate clarifying questions for this scope."

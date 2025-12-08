@@ -113,8 +113,8 @@ class TeamSettings(BaseModel):
     pso_image_prompt: Optional[str] = None
     enable_solution_image: bool = True  # Enabled by default
     enable_pso_image: bool = True
-    scope_template_id: Optional[str] = None  # Google Doc ID for scope template
-    pso_template_id: Optional[str] = None  # Google Doc ID for PSO template
+    scope_template_id: Optional[str] = "1GTrMfUm0fswd_OMc7HAvERSmJpiEsgw9nY6JMQOFvI4"  # Default Scope template
+    pso_template_id: Optional[str] = "1q25z5wUxsvaFC1oVHZ8QlLXPIB0j0eWubKn_aFINjAo"  # Default PSO template
     vector_similar_limit: int = 3
     enable_oneshot_research: bool = True
     enable_oneshot_vector: bool = True

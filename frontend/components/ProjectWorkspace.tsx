@@ -225,13 +225,21 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     setErrorMessage(null);
 
     const isOneshot = runMode === "oneshot";
-    // Determine template_type from selected template name
+    // Determine template_type from selected template ID or name
+    const PSO_TEMPLATE_ID = "1q25z5wUxsvaFC1oVHZ8QlLXPIB0j0eWubKn_aFINjAo";
+    const SCOPE_TEMPLATE_ID = "1GTrMfUm0fswd_OMc7HAvERSmJpiEsgw9nY6JMQOFvI4";
     const selectedTemplate = templates.find((t) => t.id === templateId);
-    const templateType = selectedTemplate?.name?.toLowerCase().includes("pso")
-      ? "PSO"
-      : selectedTemplate?.name?.toLowerCase().includes("scope")
-      ? "Scope"
-      : selectedTemplate?.name || "Scope";
+    
+    let templateType = "Scope"; // default
+    if (templateId === PSO_TEMPLATE_ID) {
+      templateType = "PSO";
+    } else if (templateId === SCOPE_TEMPLATE_ID) {
+      templateType = "Scope";
+    } else if (selectedTemplate?.name?.toLowerCase().includes("pso")) {
+      templateType = "PSO";
+    } else if (selectedTemplate?.name) {
+      templateType = selectedTemplate.name;
+    }
     
     const payload = {
       run_mode: runMode,

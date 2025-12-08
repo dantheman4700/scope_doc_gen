@@ -410,23 +410,107 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       {/* Solution Graphic */}
       {solutionGraphicUrl && (
         <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <h2 style={{ margin: 0 }}>Solution Graphic</h2>
-          <div style={{ display: "flex", justifyContent: "center", padding: "1rem", background: "#0f0f1a", borderRadius: "0.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Solution Graphic</h2>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => {
+                  const modal = document.getElementById("graphic-zoom-modal");
+                  if (modal) modal.style.display = "flex";
+                }}
+              >
+                🔍 Zoom
+              </button>
+              <a 
+                href={solutionGraphicUrl} 
+                download={`solution_graphic_${runId}.png`}
+                className="btn-secondary"
+                style={{ textDecoration: "none" }}
+              >
+                Download
+              </a>
+            </div>
+          </div>
+          <div style={{ 
+            display: "flex", 
+            justifyContent: "center", 
+            alignItems: "center",
+            padding: "0.5rem", 
+            background: "#0a0a14", 
+            borderRadius: "0.5rem",
+            minHeight: "400px",
+            overflow: "hidden"
+          }}>
             <img 
               src={solutionGraphicUrl} 
               alt="Solution Architecture Graphic" 
-              style={{ maxWidth: "100%", maxHeight: "600px", borderRadius: "0.5rem" }}
+              style={{ 
+                width: "100%",
+                height: "auto",
+                maxHeight: "70vh",
+                objectFit: "contain",
+                borderRadius: "0.375rem",
+                cursor: "zoom-in"
+              }}
+              onClick={() => {
+                const modal = document.getElementById("graphic-zoom-modal");
+                if (modal) modal.style.display = "flex";
+              }}
             />
           </div>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <a 
-              href={solutionGraphicUrl} 
-              download={`solution_graphic_${runId}.png`}
-              className="btn-secondary"
-              style={{ textDecoration: "none" }}
+          {/* Zoom Modal */}
+          <div 
+            id="graphic-zoom-modal"
+            style={{
+              display: "none",
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.9)",
+              justifyContent: "center",
+              alignItems: "center",
+              zIndex: 9999,
+              cursor: "zoom-out",
+              padding: "2rem"
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                e.currentTarget.style.display = "none";
+              }
+            }}
+          >
+            <img 
+              src={solutionGraphicUrl} 
+              alt="Solution Architecture Graphic (Full Size)" 
+              style={{ 
+                maxWidth: "95vw",
+                maxHeight: "95vh",
+                objectFit: "contain",
+                borderRadius: "0.5rem",
+                boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)"
+              }}
+            />
+            <button
+              style={{
+                position: "absolute",
+                top: "1rem",
+                right: "1rem",
+                background: "rgba(255,255,255,0.1)",
+                border: "none",
+                borderRadius: "0.5rem",
+                padding: "0.5rem 1rem",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: "1rem"
+              }}
+              onClick={() => {
+                const modal = document.getElementById("graphic-zoom-modal");
+                if (modal) modal.style.display = "none";
+              }}
             >
-              Download Graphic
-            </a>
+              ✕ Close
+            </button>
           </div>
         </section>
       )}
