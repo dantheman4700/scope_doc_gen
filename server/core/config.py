@@ -107,7 +107,7 @@ CLAUDE_THINKING_BUDGET = int(os.getenv("CLAUDE_THINKING_BUDGET", "12000"))
 
 # Gemini image generation (Nano Banana Pro)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_IMAGE_SIZE = os.getenv("GEMINI_IMAGE_SIZE", "1024x1024")
+GEMINI_IMAGE_SIZE = os.getenv("GEMINI_IMAGE_SIZE", "4K")  # Valid: 1K, 2K, 4K
 
 # Session configuration
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")

@@ -3,6 +3,24 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
+// Default settings values
+const DEFAULT_SETTINGS: TeamSettings = {
+  research_mode_default: "quick",
+  vector_similar_limit: 3,
+  enable_oneshot_research: true,
+  enable_oneshot_vector: true,
+  enable_solution_image: true,
+  enable_pso_image: true,
+  image_resolution: "4K",
+  image_aspect_ratio: "auto",
+  scope_template_id: null,
+  pso_template_id: null,
+  scope_prompt: null,
+  pso_prompt: null,
+  image_prompt: null,
+  pso_image_prompt: null,
+};
+
 interface TeamSettings {
   team_id?: string;
   scope_prompt?: string | null;
@@ -17,7 +35,8 @@ interface TeamSettings {
   enable_oneshot_research?: boolean;
   enable_oneshot_vector?: boolean;
   research_mode_default?: string;
-  image_size?: string;
+  image_resolution?: string;
+  image_aspect_ratio?: string;
 }
 
 interface Team {
@@ -29,7 +48,7 @@ interface Team {
 export default function SettingsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
-  const [settings, setSettings] = useState<TeamSettings>({});
+  const [settings, setSettings] = useState<TeamSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -51,7 +70,7 @@ export default function SettingsPage() {
       });
   }, []);
 
-  // Load settings when team changes
+  // Load settings when team changes - merge with defaults
   useEffect(() => {
     if (!selectedTeamId) return;
     
@@ -59,11 +78,12 @@ export default function SettingsPage() {
     fetch(`/api/teams/${selectedTeamId}/settings`)
       .then((res) => res.json())
       .then((data) => {
-        setSettings(data || {});
+        // Merge fetched settings with defaults
+        setSettings({ ...DEFAULT_SETTINGS, ...(data || {}) });
         setIsLoading(false);
       })
       .catch(() => {
-        setSettings({});
+        setSettings(DEFAULT_SETTINGS);
         setIsLoading(false);
       });
   }, [selectedTeamId]);
@@ -86,7 +106,7 @@ export default function SettingsPage() {
       }
       
       const data = await response.json();
-      setSettings(data);
+      setSettings({ ...DEFAULT_SETTINGS, ...data });
       setMessage({ type: "success", text: "Settings saved successfully" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to save" });
@@ -159,7 +179,7 @@ export default function SettingsPage() {
           <label htmlFor="research-default">Default Research Mode</label>
           <select
             id="research-default"
-            value={settings.research_mode_default || "quick"}
+            value={settings.research_mode_default}
             onChange={(e) => updateSetting("research_mode_default", e.target.value)}
           >
             <option value="none">None</option>
@@ -175,7 +195,7 @@ export default function SettingsPage() {
             type="number"
             min={1}
             max={10}
-            value={settings.vector_similar_limit || 3}
+            value={settings.vector_similar_limit}
             onChange={(e) => updateSetting("vector_similar_limit", parseInt(e.target.value) || 3)}
           />
           <small style={{ color: "#9ca3af" }}>Number of similar past scopes to use as context</small>
@@ -185,7 +205,7 @@ export default function SettingsPage() {
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
               type="checkbox"
-              checked={settings.enable_oneshot_research ?? true}
+              checked={settings.enable_oneshot_research}
               onChange={(e) => updateSetting("enable_oneshot_research", e.target.checked)}
             />
             Enable research for one-shot mode
@@ -194,7 +214,7 @@ export default function SettingsPage() {
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
               type="checkbox"
-              checked={settings.enable_oneshot_vector ?? true}
+              checked={settings.enable_oneshot_vector}
               onChange={(e) => updateSetting("enable_oneshot_vector", e.target.checked)}
             />
             Enable vector search for one-shot mode
@@ -244,7 +264,7 @@ export default function SettingsPage() {
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
               type="checkbox"
-              checked={settings.enable_solution_image ?? false}
+              checked={settings.enable_solution_image}
               onChange={(e) => updateSetting("enable_solution_image", e.target.checked)}
             />
             Enable solution images for scopes
@@ -253,24 +273,42 @@ export default function SettingsPage() {
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
             <input
               type="checkbox"
-              checked={settings.enable_pso_image ?? false}
+              checked={settings.enable_pso_image}
               onChange={(e) => updateSetting("enable_pso_image", e.target.checked)}
             />
             Enable comparison images for PSO
           </label>
         </div>
 
-        <div className="form-field">
-          <label htmlFor="image-size">Image Size</label>
-          <select
-            id="image-size"
-            value={settings.image_size || "1024x1024"}
-            onChange={(e) => updateSetting("image_size", e.target.value)}
-          >
-            <option value="1024x1024">1024x1024</option>
-            <option value="1792x1024">1792x1024 (Wide)</option>
-            <option value="1024x1792">1024x1792 (Tall)</option>
-          </select>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+          <div className="form-field">
+            <label htmlFor="image-resolution">Resolution</label>
+            <select
+              id="image-resolution"
+              value={settings.image_resolution}
+              onChange={(e) => updateSetting("image_resolution", e.target.value)}
+            >
+              <option value="1K">1K</option>
+              <option value="2K">2K</option>
+              <option value="4K">4K</option>
+            </select>
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="image-aspect-ratio">Aspect Ratio</label>
+            <select
+              id="image-aspect-ratio"
+              value={settings.image_aspect_ratio}
+              onChange={(e) => updateSetting("image_aspect_ratio", e.target.value)}
+            >
+              <option value="auto">Auto</option>
+              <option value="1:1">1:1 (Square)</option>
+              <option value="16:9">16:9 (Wide)</option>
+              <option value="9:16">9:16 (Tall)</option>
+              <option value="4:3">4:3</option>
+              <option value="3:4">3:4</option>
+            </select>
+          </div>
         </div>
 
         <div className="form-field">
@@ -338,4 +376,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-

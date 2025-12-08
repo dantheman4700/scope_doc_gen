@@ -595,6 +595,45 @@ async def download_run_md(
     return StreamingResponse(io.BytesIO(data), media_type=media_type, headers=headers)
 
 
+@run_router.get("/{run_id}/solution-graphic")
+async def get_solution_graphic(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """Get the solution graphic image if available."""
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful")
+
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "solution_graphic")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No solution graphic available")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Image file is unavailable")
+
+    data = local_path.read_bytes()
+    mime_type = artifact.meta.get("type", "image/png")
+    
+    return StreamingResponse(io.BytesIO(data), media_type=mime_type)
+
+
 @run_router.post("/{run_id}/export-google-doc")
 async def export_run_google_doc(
     run_id: UUID,

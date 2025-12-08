@@ -109,17 +109,45 @@ Key variables:
 
 ## Current Deployment (server) – subject to change
 
-- Location: production copy lives at `/opt/scope_doc_gen` (backend) and `/opt/scope_doc_gen/frontend` (frontend). Development happens in `/home/dan/projects/scope_doc_gen`; changes are pulled or copied into `/opt/scope_doc_gen`.
-- Process manager: systemd runs two units as user `dan`:
-  - `scope-backend.service` → `/opt/scope_doc_gen/venv/bin/uvicorn server.api:app --host 127.0.0.1 --port 8010 --workers 2`, env file `/opt/scope_doc_gen/server/.env`.
-  - `scope-frontend.service` → `next start -p 3021` from `/opt/scope_doc_gen/frontend`, env file `/opt/scope_doc_gen/frontend/.env.local`, Node 18.
-- Update/redeploy steps (manual):
-  1) Sync code to `/opt/scope_doc_gen` (e.g., `git pull` or copy from `/home/dan/projects/scope_doc_gen`).
-  2) Backend deps: `. /opt/scope_doc_gen/venv/bin/activate && pip install -r requirements.txt`.
-  3) Frontend build: `cd /opt/scope_doc_gen/frontend && npm install && npm run build`.
-  4) Restart services: `sudo systemctl restart scope-backend scope-frontend`.
-  5) Verify: `systemctl status scope-backend scope-frontend` and check `journalctl -u scope-backend/-frontend`.
-- Behavior: services do not auto-reload on code changes; a rebuild + restart is required after updates or env changes.
+- **Locations:**
+  - Production: `/opt/scope_doc_gen`
+  - Development: `/home/dan/projects/scope_doc_gen`
+  
+- **Process manager:** systemd runs two units as user `dan`:
+  - `scope-backend.service` → uvicorn on port 8010, env file `/opt/scope_doc_gen/server/.env`
+  - `scope-frontend.service` → Next.js on port 3021, env file `/opt/scope_doc_gen/frontend/.env.local`
+
+### Quick Deploy (using sync scripts)
+
+```bash
+# 1. Sync server/ and frontend/ code, rebuild frontend, restart services
+./scripts/sync-all.sh
+
+# 2. Sync files not covered by sync-all (alembic, requirements)
+rsync -av --delete /home/dan/projects/scope_doc_gen/alembic/versions/ /opt/scope_doc_gen/alembic/versions/
+cp /home/dan/projects/scope_doc_gen/requirements.txt /opt/scope_doc_gen/requirements.txt
+
+# 3. Install new dependencies and run migrations
+cd /opt/scope_doc_gen && source venv/bin/activate
+pip install -r requirements.txt
+alembic upgrade head
+
+# 4. Restart services (sync-all does this, but do again after migration)
+sudo systemctl restart scope-backend scope-frontend
+```
+
+**Note:** The `--delete` flag on rsync removes files in production that don't exist in dev. This prevents orphaned migration files from causing "multiple heads" errors in Alembic.
+
+### Manual Deploy (without sync scripts)
+
+1. Sync code to `/opt/scope_doc_gen` (git pull or rsync)
+2. Backend deps: `. /opt/scope_doc_gen/venv/bin/activate && pip install -r requirements.txt`
+3. Run migrations: `alembic upgrade head`
+4. Frontend build: `cd /opt/scope_doc_gen/frontend && npm install && npm run build`
+5. Restart: `sudo systemctl restart scope-backend scope-frontend`
+6. Verify: `systemctl status scope-backend scope-frontend`
+
+Services do not auto-reload; rebuild + restart required after changes.
 
 ## License
 

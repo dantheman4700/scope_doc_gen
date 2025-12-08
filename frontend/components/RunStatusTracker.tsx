@@ -30,6 +30,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [isLoadingMarkdown, setIsLoadingMarkdown] = useState<boolean>(false);
   const [showQuickRegen, setShowQuickRegen] = useState<boolean>(false);
   const [expertAnswers, setExpertAnswers] = useState<string>("");
+  const [solutionGraphicUrl, setSolutionGraphicUrl] = useState<string | null>(null);
+  const [isLoadingGraphic, setIsLoadingGraphic] = useState<boolean>(false);
   // Included files do not change after run creation, so load once and never re-render them on poll
   const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
   const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
@@ -55,7 +57,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         const runData = (await runResponse.json()) as RunSummary;
         const stepsData = stepsResponse.ok ? ((await stepsResponse.json()) as RunStep[]) : [];
 
-        setRun((prev) => (prev.status === runData.status ? prev : runData));
+        // Always update run data - params may have changed (e.g., questions auto-generated)
+        setRun(runData);
         setSteps(stepsData ?? []);
         setError(null);
 
@@ -74,6 +77,29 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       window.clearInterval(interval);
     };
   }, [isPolling, runId]);
+
+  // Check for solution graphic when run is successful
+  useEffect(() => {
+    if (run.status.toLowerCase() !== "success" || solutionGraphicUrl) return;
+    
+    setIsLoadingGraphic(true);
+    fetch(`/api/runs/${runId}/solution-graphic`)
+      .then((res) => {
+        if (res.ok) {
+          return res.blob();
+        }
+        return null;
+      })
+      .then((blob) => {
+        if (blob) {
+          setSolutionGraphicUrl(URL.createObjectURL(blob));
+        }
+      })
+      .catch(() => {
+        // No graphic available, that's fine
+      })
+      .finally(() => setIsLoadingGraphic(false));
+  }, [run.status, runId, solutionGraphicUrl]);
 
   const statusChip = useMemo(() => {
     const status = run.status.toLowerCase();
@@ -301,7 +327,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <p className="run-tracker__meta">
             <span className={statusChip.className}>{statusChip.label}</span>
             <span>Mode: {run.run_mode}</span>
+            {run.template_type && <span>Template: {run.template_type}</span>}
             <span>Research: {run.research_mode}</span>
+            {Boolean(run.params?.enable_vector_store) && <span>Vector Search: ✓</span>}
           </p>
           <p className="run-tracker__timestamps">
             <span>Created: {formatDate(run.created_at)}</span>
@@ -327,7 +355,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             onClick={handleViewMarkdown}
             disabled={!canExport || isLoadingMarkdown}
           >
-            {isLoadingMarkdown ? "Loading…" : "View MD"}
+            {isLoadingMarkdown ? "Loading…" : "View Markdown"}
           </button>
           <button
             className="btn-secondary"
@@ -335,7 +363,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             onClick={() => handleDownload("md")}
             disabled={!canExport || isDownloadingMd}
           >
-            {isDownloadingMd ? "Preparing…" : "Download MD"}
+            {isDownloadingMd ? "Preparing…" : "Download Markdown"}
           </button>
           <button
             className="btn-secondary"
@@ -378,6 +406,35 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       </section>
 
       {run.error ? <p className="error-text">{run.error}</p> : null}
+
+      {/* Solution Graphic */}
+      {solutionGraphicUrl && (
+        <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <h2 style={{ margin: 0 }}>Solution Graphic</h2>
+          <div style={{ display: "flex", justifyContent: "center", padding: "1rem", background: "#0f0f1a", borderRadius: "0.5rem" }}>
+            <img 
+              src={solutionGraphicUrl} 
+              alt="Solution Architecture Graphic" 
+              style={{ maxWidth: "100%", maxHeight: "600px", borderRadius: "0.5rem" }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <a 
+              href={solutionGraphicUrl} 
+              download={`solution_graphic_${runId}.png`}
+              className="btn-secondary"
+              style={{ textDecoration: "none" }}
+            >
+              Download Graphic
+            </a>
+          </div>
+        </section>
+      )}
+      {isLoadingGraphic && (
+        <section className="card">
+          <p className="muted">Loading solution graphic...</p>
+        </section>
+      )}
 
       <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
         <h2 style={{ margin: 0 }}>AI Feedback</h2>
@@ -436,6 +493,41 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <p className="muted">No client questions generated yet.</p>
         )}
       </section>
+
+      {/* Quick Regen with Expert Answers */}
+      {questions && (questions.questions_for_expert?.length || questions.questions_for_client?.length) && (
+        <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <h2 style={{ margin: 0 }}>Provide Answers & Regenerate</h2>
+          <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
+            Answer the expert questions above and click Quick Regen to improve the scope with your insights.
+          </p>
+          <textarea
+            placeholder="Paste your answers to the expert questions here..."
+            value={expertAnswers}
+            onChange={(e) => setExpertAnswers(e.target.value)}
+            rows={5}
+            style={{
+              width: "100%",
+              padding: "0.75rem",
+              borderRadius: "0.375rem",
+              border: "1px solid #374151",
+              background: "#1f2937",
+              color: "#e5e7eb",
+              fontSize: "0.875rem",
+              resize: "vertical",
+            }}
+          />
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <Link
+              href={`/projects/${run.project_id}?quickRegen=${run.id}&context=${encodeURIComponent(expertAnswers)}`}
+              className="btn-primary"
+              style={{ textDecoration: "none" }}
+            >
+              Quick Regen with Answers
+            </Link>
+          </div>
+        </section>
+      )}
 
       <section className="run-tracker__metadata">
         <h2>Included files</h2>
@@ -530,12 +622,13 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               style={{
                 flex: 1,
                 overflow: "auto",
-                background: "#1a1a2e",
+                background: "#0f0f1a",
                 borderRadius: "0.5rem",
                 padding: "1rem",
+                border: "1px solid #374151",
               }}
             >
-              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.875rem", lineHeight: 1.6 }}>
+              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.875rem", lineHeight: 1.6, color: "#e5e7eb", fontFamily: "monospace" }}>
                 {markdownContent}
               </pre>
             </div>

@@ -225,6 +225,14 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     setErrorMessage(null);
 
     const isOneshot = runMode === "oneshot";
+    // Determine template_type from selected template name
+    const selectedTemplate = templates.find((t) => t.id === templateId);
+    const templateType = selectedTemplate?.name?.toLowerCase().includes("pso")
+      ? "PSO"
+      : selectedTemplate?.name?.toLowerCase().includes("scope")
+      ? "Scope"
+      : selectedTemplate?.name || "Scope";
+    
     const payload = {
       run_mode: runMode,
       research_mode: researchMode,
@@ -233,6 +241,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       enable_web_search: researchMode !== "none",
       included_file_ids: Array.from(selectedFileIds),
       template_id: isOneshot && templateId ? templateId : undefined,
+      template_type: isOneshot ? templateType : undefined,
     };
 
     try {

@@ -31,6 +31,7 @@ from .llm import ClaudeExtractor
 from .renderer import TemplateRenderer
 from .history_retrieval import HistoryRetriever
 from .research import ResearchManager, ResearchMode
+from .image_gen import generate_scope_image, ImageGenError, GENAI_AVAILABLE
 
 
 class ScopeDocGenerator:
@@ -517,6 +518,10 @@ class ScopeDocGenerator:
         research_mode: str = "none",
         enable_vector_store: bool = False,
         enable_web_search: bool = False,
+        enable_image_generation: bool = False,
+        image_prompt: Optional[str] = None,
+        image_resolution: str = "4K",
+        image_aspect_ratio: str = "auto",
     ) -> str:
         """
         Generate a scope document in one shot with optional research and vector search.
@@ -689,7 +694,43 @@ class ScopeDocGenerator:
             except Exception as fb_err:
                 print(f"[WARN] Could not save feedback: {fb_err}")
 
-        # Step 5: Render/save markdown
+        # Step 5: Optional image generation
+        image_path = None
+        if enable_image_generation and GENAI_AVAILABLE:
+            notify("image_gen", "started", None)
+            try:
+                # Extract proposed solution from markdown for image prompt
+                solution_text = self._extract_proposed_solution(markdown)
+                if solution_text:
+                    logger.info(f"Generating solution image (resolution={image_resolution}, aspect={image_aspect_ratio})")
+                    result = generate_scope_image(
+                        solution_text=solution_text,
+                        custom_prompt=image_prompt,
+                    )
+                    # Save image
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    ext = "png" if "png" in result.mime_type else "jpg"
+                    image_filename = f"solution_graphic_{timestamp}.{ext}"
+                    image_path = self.output_dir / image_filename
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    image_path.write_bytes(result.data)
+                    logger.info(f"Saved solution image: {image_path}")
+                    print(f"[OK] Solution image saved to: {image_path}")
+                    notify("image_gen", "completed", image_filename)
+                else:
+                    logger.warning("Could not extract proposed solution for image generation")
+                    notify("image_gen", "skipped", "No proposed solution found")
+            except ImageGenError as img_exc:
+                logger.warning(f"Image generation failed: {img_exc}")
+                notify("image_gen", "failed", str(img_exc))
+            except Exception as img_exc:
+                logger.exception(f"Unexpected image generation error: {img_exc}")
+                notify("image_gen", "failed", str(img_exc))
+        elif enable_image_generation and not GENAI_AVAILABLE:
+            logger.warning("Image generation requested but google-genai not installed")
+            notify("image_gen", "skipped", "google-genai not installed")
+
+        # Step 6: Render/save markdown
         notify("render", "started", None)
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -703,6 +744,36 @@ class ScopeDocGenerator:
             notify("render", "failed", str(render_exc))
             raise
     
+    def _extract_proposed_solution(self, markdown: str) -> Optional[str]:
+        """
+        Extract the "Proposed Solution" section from the markdown for image generation.
+        
+        Returns the content between "## Proposed Solution" (or similar heading) and the next heading.
+        """
+        import re
+        
+        # Look for common solution-related section headings
+        patterns = [
+            r'##\s*Proposed\s+Solution\s*\n(.*?)(?=\n##|\Z)',
+            r'##\s*Solution\s+Overview\s*\n(.*?)(?=\n##|\Z)',
+            r'##\s*Technical\s+Solution\s*\n(.*?)(?=\n##|\Z)',
+            r'##\s*Recommended\s+Solution\s*\n(.*?)(?=\n##|\Z)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, markdown, re.DOTALL | re.IGNORECASE)
+            if match:
+                content = match.group(1).strip()
+                # Limit to first 2000 chars for image prompt
+                if len(content) > 2000:
+                    content = content[:2000] + "..."
+                return content
+        
+        # Fallback: return first 1500 chars if no section found
+        if len(markdown) > 500:
+            return markdown[:1500] + "..."
+        return None
+
     def _interactive_refinement(self, variables: dict) -> dict:
         """
         Allow user to interactively refine variables.

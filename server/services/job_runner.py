@@ -57,6 +57,11 @@ class RunOptions:
     variables_delta: Optional[str] = None
     template_id: Optional[str] = None  # Google Drive file ID for one-shot mode templates
     template_type: Optional[str] = None  # "Scope", "PSO", etc.
+    # Image generation options
+    enable_image_generation: bool = False
+    image_prompt: Optional[str] = None
+    image_resolution: str = "4K"
+    image_aspect_ratio: str = "auto"
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +77,10 @@ class RunOptions:
             "variables_delta": self.variables_delta,
             "template_id": self.template_id,
             "template_type": self.template_type,
+            "enable_image_generation": self.enable_image_generation,
+            "image_prompt": self.image_prompt,
+            "image_resolution": self.image_resolution,
+            "image_aspect_ratio": self.image_aspect_ratio,
         }
 
 
@@ -119,7 +128,41 @@ class JobRegistry:
         self._storage = get_storage()
         self._use_remote_storage = STORAGE_PROVIDER == "supabase"
 
+    def _load_team_settings(self, project_id: str) -> dict:
+        """Load team settings for the project's team."""
+        try:
+            with get_session() as session:
+                project = session.query(models.Project).filter_by(id=project_id).first()
+                if project and project.team_id:
+                    team = session.query(models.Team).filter_by(id=project.team_id).first()
+                    if team and team.settings:
+                        LOGGER.info(f"Loaded team settings for project {project_id}: {team.settings}")
+                        return team.settings
+        except Exception as e:
+            LOGGER.warning(f"Failed to load team settings: {e}")
+        return {}
+
+    def _apply_team_settings(self, options: RunOptions, settings: dict) -> RunOptions:
+        """Apply team-level defaults to run options."""
+        # Apply image generation settings
+        if settings.get("enable_solution_image") and not options.enable_image_generation:
+            options.enable_image_generation = settings.get("enable_solution_image", False)
+        if settings.get("image_prompt") and not options.image_prompt:
+            options.image_prompt = settings.get("image_prompt")
+        if settings.get("image_resolution"):
+            options.image_resolution = settings.get("image_resolution", "4K")
+        if settings.get("image_aspect_ratio"):
+            options.image_aspect_ratio = settings.get("image_aspect_ratio", "auto")
+        
+        LOGGER.info(f"Applied team settings: enable_image={options.enable_image_generation}, resolution={options.image_resolution}")
+        return options
+
     def create_job(self, project_id: str, options: RunOptions) -> JobStatus:
+        # Load and apply team settings
+        team_settings = self._load_team_settings(project_id)
+        if team_settings:
+            options = self._apply_team_settings(options, team_settings)
+
         job_id = uuid4()
         # Determine template_type based on run_mode (default to "Scope" for oneshot)
         template_type = options.template_type
@@ -287,6 +330,10 @@ class JobRegistry:
                     research_mode=options.research_mode,
                     enable_vector_store=options.enable_vector_store,
                     enable_web_search=options.enable_web_search,
+                    enable_image_generation=options.enable_image_generation,
+                    image_prompt=options.image_prompt,
+                    image_resolution=options.image_resolution,
+                    image_aspect_ratio=options.image_aspect_ratio,
                 )
                 feedback = generator.last_feedback
             else:
@@ -322,6 +369,10 @@ class JobRegistry:
             if variables_artifact_id:
                 self._update_run(job.id, extracted_variables_artifact_id=variables_artifact_id)
                 job.params.setdefault("extracted_variables_artifact_id", str(variables_artifact_id))
+            
+            # Auto-generate questions after successful completion
+            self._auto_generate_questions(job, paths, result_rel)
+            
             # Embedding now triggered manually via API endpoint for consistency
         except Exception as exc:  # pragma: no cover - execution safeguard
             LOGGER.exception(f"Job {job_id} failed: {exc}")
@@ -344,6 +395,37 @@ class JobRegistry:
             job.status = JobState.FAILED
             job.finished_at = datetime.utcnow()
             job.error = error
+
+    def _auto_generate_questions(self, job: JobStatus, paths, result_rel: Optional[str]) -> None:
+        """Auto-generate clarifying questions after successful scope generation."""
+        if not result_rel:
+            return
+        
+        try:
+            from server.core.llm import ClaudeExtractor
+            
+            result_path = paths.root / Path(result_rel)
+            if not result_path.exists():
+                LOGGER.warning(f"Result file not found for question generation: {result_path}")
+                return
+            
+            scope_markdown = result_path.read_text(encoding="utf-8")
+            LOGGER.info(f"Auto-generating questions for run {job.id}")
+            
+            extractor = ClaudeExtractor()
+            questions = extractor.generate_questions(scope_markdown=scope_markdown)
+            
+            if questions.get("questions_for_expert") or questions.get("questions_for_client"):
+                # Update job params with questions
+                job.params["questions_for_expert"] = questions.get("questions_for_expert", [])
+                job.params["questions_for_client"] = questions.get("questions_for_client", [])
+                self._update_run(job.id, params=job.params)
+                LOGGER.info(f"Auto-generated {len(questions.get('questions_for_expert', []))} expert questions, "
+                           f"{len(questions.get('questions_for_client', []))} client questions")
+            else:
+                LOGGER.warning("Question generation returned empty results")
+        except Exception as exc:
+            LOGGER.exception(f"Auto question generation failed for job {job.id}: {exc}")
 
     def _update_run(self, run_id: UUID, **updates) -> None:
         with get_session() as session:
@@ -500,6 +582,16 @@ class JobRegistry:
             rendered_path = (paths.root / Path(result_rel)).resolve()
             if rendered_path.exists():
                 entries.append(("rendered_doc", rendered_path, {"type": "markdown"}))
+
+        # Check for solution graphic images
+        import glob
+        for img_path in glob.glob(str(run_outputs_dir / "solution_graphic_*")):
+            img_file = Path(img_path)
+            if img_file.exists():
+                ext = img_file.suffix.lower()
+                mime = "image/png" if ext == ".png" else "image/jpeg"
+                entries.append(("solution_graphic", img_file, {"type": mime}))
+                break  # Only take the first/latest one
 
         created: Dict[str, UUID] = {}
         if not entries:

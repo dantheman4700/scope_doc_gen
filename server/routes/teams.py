@@ -111,15 +111,16 @@ class TeamSettings(BaseModel):
     pso_prompt: Optional[str] = None
     image_prompt: Optional[str] = None
     pso_image_prompt: Optional[str] = None
-    enable_solution_image: bool = False  # Disabled by default until prompts provided
-    enable_pso_image: bool = False
+    enable_solution_image: bool = True  # Enabled by default
+    enable_pso_image: bool = True
     scope_template_id: Optional[str] = None  # Google Doc ID for scope template
     pso_template_id: Optional[str] = None  # Google Doc ID for PSO template
     vector_similar_limit: int = 3
     enable_oneshot_research: bool = True
     enable_oneshot_vector: bool = True
     research_mode_default: str = "quick"
-    image_size: str = "1024x1024"
+    image_resolution: str = "4K"  # 1K, 2K, or 4K
+    image_aspect_ratio: str = "auto"  # auto, 1:1, 16:9, 9:16, 4:3, 3:4
 
     class Config:
         extra = "ignore"

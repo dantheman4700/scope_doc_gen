@@ -88,9 +88,11 @@ def generate_image(
         ImageGenError: If generation fails
     """
     client = _ensure_client(api_key)
-    target_size = size or GEMINI_IMAGE_SIZE or "1024x1024"
+    # Map resolution to API size format
+    size_map = {"1K": "1K", "2K": "2K", "4K": "4K"}
+    target_size = size_map.get(size or GEMINI_IMAGE_SIZE or "1K", "1K")
     
-    logger.info(f"Generating image with Gemini (size={target_size})")
+    logger.info(f"Generating image with Gemini gemini-3-pro-image-preview (size={target_size})")
     
     try:
         contents = [
@@ -100,43 +102,43 @@ def generate_image(
             )
         ]
         
-        config = genai_types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-        )
+        # Use the correct config with image_size
+        # Build config - ImageConfig may not be available in all versions
+        try:
+            config = genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+                image_config=genai_types.ImageConfig(
+                    image_size=target_size,
+                ),
+            )
+        except (AttributeError, TypeError) as config_err:
+            logger.warning(f"ImageConfig not available, using basic config: {config_err}")
+            config = genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+            )
         
-        # Use streaming to handle large responses
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-preview-image-generation",
+        # Use streaming to handle large responses (recommended approach)
+        for chunk in client.models.generate_content_stream(
+            model="gemini-3-pro-image-preview",  # Correct model name
             contents=contents,
             config=config,
-        )
-        
-        # Extract image from response
-        if not response.candidates:
-            raise ImageGenError("No candidates in Gemini response")
-        
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            raise ImageGenError("No content parts in Gemini response")
-        
-        for part in candidate.content.parts:
+        ):
+            if (
+                chunk.candidates is None
+                or chunk.candidates[0].content is None
+                or chunk.candidates[0].content.parts is None
+            ):
+                continue
+            
+            part = chunk.candidates[0].content.parts[0]
             inline = getattr(part, "inline_data", None)
             if inline and inline.data:
                 data = inline.data
-                # Handle base64-encoded data
-                if isinstance(data, str):
-                    try:
-                        decoded = base64.b64decode(data)
-                    except Exception:
-                        decoded = data.encode()
-                else:
-                    decoded = data
-                
                 mime_type = getattr(inline, "mime_type", "image/png")
-                logger.info(f"Generated image: {len(decoded)} bytes, {mime_type}")
-                return ImageResult(data=decoded, mime_type=mime_type)
+                logger.info(f"Generated image: {len(data)} bytes, {mime_type}")
+                return ImageResult(data=data, mime_type=mime_type)
         
-        raise ImageGenError("No image data found in Gemini response")
+        raise ImageGenError("No image data found in Gemini streaming response")
         
     except ImageGenError:
         raise

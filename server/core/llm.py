@@ -91,7 +91,7 @@ class ClaudeExtractor:
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=MAX_TOKENS,
-                    temperature=TEMPERATURE,
+                    temperature=1,  # Must be 1 when thinking is enabled
                     thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                     system=system_prompt,
                     messages=[
@@ -163,7 +163,7 @@ class ClaudeExtractor:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
-                temperature=max(0.1, TEMPERATURE),
+                temperature=1,  # Must be 1 when thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
@@ -256,7 +256,7 @@ class ClaudeExtractor:
             response = self.client.beta.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
-                temperature=max(0.2, TEMPERATURE),
+                temperature=1,  # Must be 1 when thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
@@ -379,8 +379,8 @@ class ClaudeExtractor:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=min(1500, MAX_TOKENS),
-                temperature=0.2,
+                max_tokens=16000,  # Must be > thinking.budget_tokens (12000)
+                temperature=1,  # Must be 1 when thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
@@ -393,7 +393,7 @@ class ClaudeExtractor:
             text = self._extract_text_from_response(response)
             return self._parse_feedback_json(text)
         except Exception as exc:
-            print(f"[WARN] Feedback generation failed: {exc}")
+            logger.exception(f"Feedback generation failed: {exc}")
             return {}
 
     def generate_questions(
@@ -426,8 +426,8 @@ class ClaudeExtractor:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=2000,
-                temperature=0.3,
+                max_tokens=16000,  # Must be > thinking.budget_tokens (12000)
+                temperature=1,  # Must be 1 when thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
@@ -438,14 +438,16 @@ class ClaudeExtractor:
                 ],
             )
             text = self._extract_text_from_response(response)
+            logger.info(f"Questions raw response text (first 500 chars): {text[:500] if text else 'EMPTY'}")
             result = self._parse_feedback_json(text)
+            logger.info(f"Parsed questions result: {result}")
             # Ensure required keys exist
             return {
                 "questions_for_expert": result.get("questions_for_expert", []),
                 "questions_for_client": result.get("questions_for_client", []),
             }
         except Exception as exc:
-            print(f"[WARN] Question generation failed: {exc}")
+            logger.exception(f"Question generation failed: {exc}")
             return {"questions_for_expert": [], "questions_for_client": []}
 
     def extract_variables_with_raw(
@@ -477,7 +479,7 @@ class ClaudeExtractor:
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=MAX_TOKENS,
-                    temperature=TEMPERATURE,
+                    temperature=1,  # Must be 1 when thinking is enabled
                     thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                     system=system_prompt,
                     messages=[
@@ -559,7 +561,7 @@ Please provide the refined value for this variable. Return ONLY the value in the
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=4000,
-                temperature=TEMPERATURE,
+                temperature=1,  # Must be 1 when thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 messages=[
                     {"role": "user", "content": prompt}
@@ -750,7 +752,7 @@ INSTRUCTIONS:
                     response = self.client.messages.create(
                         model=self.model,
                         max_tokens=min(3000, MAX_TOKENS),
-                        temperature=0.1,
+                        temperature=1,  # Must be 1 when thinking is enabled
                         thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                         system=system,
                         messages=[{"role": "user", "content": user_chunk}],
@@ -917,20 +919,47 @@ INSTRUCTIONS:
 
     def _parse_feedback_json(self, text: str) -> Dict[str, Any]:
         """Parse feedback JSON with graceful fallback."""
+        import re
+        
+        # First try direct JSON parse
         try:
-            data = json.loads(text)
+            data = json.loads(text.strip())
             return data if isinstance(data, dict) else {}
         except Exception:
-            # Try fenced block
-            fence_start = text.find("```")
-            fence_end = text.rfind("```")
-            if fence_start != -1 and fence_end != -1 and fence_end > fence_start:
-                fenced = text[fence_start + 3:fence_end].strip()
+            pass
+        
+        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        # Pattern matches ```json or ``` followed by content and closing ```
+        patterns = [
+            r'```json\s*([\s\S]*?)\s*```',  # ```json ... ```
+            r'```\s*([\s\S]*?)\s*```',       # ``` ... ```
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                json_str = match.group(1).strip()
                 try:
-                    data = json.loads(fenced)
-                    return data if isinstance(data, dict) else {}
-                except Exception:
-                    return {}
+                    data = json.loads(json_str)
+                    if isinstance(data, dict):
+                        logger.info(f"Successfully parsed JSON from code block, keys: {list(data.keys())}")
+                        return data
+                except Exception as e:
+                    logger.warning(f"Failed to parse JSON from code block: {e}")
+                    continue
+        
+        # Try to find raw JSON object in text
+        json_start = text.find('{')
+        json_end = text.rfind('}')
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            try:
+                data = json.loads(text[json_start:json_end + 1])
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        
+        logger.warning(f"Could not parse JSON from text (first 200 chars): {text[:200]}")
         return {}
 
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
