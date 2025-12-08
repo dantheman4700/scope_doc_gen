@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary } from "@/types/backend";
@@ -14,6 +15,7 @@ interface RunStatusTrackerProps {
 const TERMINAL_STATUSES = new Set(["success", "failed"]);
 
 export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusTrackerProps) {
+  const router = useRouter();
   const [run, setRun] = useState<RunSummary>(initialRun);
   const [steps, setSteps] = useState<RunStep[]>(initialSteps);
   const [isPolling, setIsPolling] = useState<boolean>(!TERMINAL_STATUSES.has(initialRun.status));
@@ -29,7 +31,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [markdownContent, setMarkdownContent] = useState<string>("");
   const [isLoadingMarkdown, setIsLoadingMarkdown] = useState<boolean>(false);
   const [showQuickRegen, setShowQuickRegen] = useState<boolean>(false);
-  const [expertAnswers, setExpertAnswers] = useState<string>("");
+  const [expertAnswers, setExpertAnswers] = useState<Record<number, string>>({});
+  const [clientAnswers, setClientAnswers] = useState<Record<number, string>>({});
+  const [isSubmittingQuickRegen, setIsSubmittingQuickRegen] = useState<boolean>(false);
+  const [quickRegenText, setQuickRegenText] = useState<string>("");
   const [solutionGraphicUrl, setSolutionGraphicUrl] = useState<string | null>(null);
   const [isLoadingGraphic, setIsLoadingGraphic] = useState<boolean>(false);
   // Included files do not change after run creation, so load once and never re-render them on poll
@@ -281,6 +286,75 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
+  const handleQuickRegenWithAnswers = async () => {
+    // Combine all answers into a formatted string
+    const expertQs = questions?.questions_for_expert || [];
+    const clientQs = questions?.questions_for_client || [];
+    
+    let combinedAnswers = "";
+    
+    if (expertQs.length > 0) {
+      combinedAnswers += "**Expert Question Answers:**\n";
+      expertQs.forEach((q, idx) => {
+        const answer = expertAnswers[idx]?.trim();
+        if (answer) {
+          combinedAnswers += `Q: ${q}\nA: ${answer}\n\n`;
+        }
+      });
+    }
+    
+    if (clientQs.length > 0) {
+      combinedAnswers += "**Client Question Answers:**\n";
+      clientQs.forEach((q, idx) => {
+        const answer = clientAnswers[idx]?.trim();
+        if (answer) {
+          combinedAnswers += `Q: ${q}\nA: ${answer}\n\n`;
+        }
+      });
+    }
+    
+    if (!combinedAnswers.trim()) {
+      setActionError("Please provide at least one answer");
+      return;
+    }
+    
+    setIsSubmittingQuickRegen(true);
+    setActionError(null);
+    
+    const params = (run.params ?? {}) as Record<string, unknown>;
+    const payload = {
+      parent_run_id: run.id,
+      run_mode: "fast",
+      research_mode: typeof params.research_mode === "string" ? params.research_mode : run.research_mode,
+      instructions: run.instructions ?? undefined,
+      enable_vector_store: typeof params.enable_vector_store === "boolean" ? params.enable_vector_store : false,
+      enable_web_search: typeof params.enable_web_search === "boolean" ? params.enable_web_search : true,
+      included_file_ids: run.included_file_ids ?? [],
+      what_to_change: combinedAnswers,
+    };
+    
+    try {
+      const response = await fetch(`/api/projects/${run.project_id}/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => ({}))) as { detail?: string; message?: string };
+        throw new Error(errorPayload.detail ?? errorPayload.message ?? `Request failed (${response.status})`);
+      }
+      
+      const newRun = (await response.json()) as RunSummary;
+      router.push(`/runs/${newRun.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Quick regeneration failed";
+      setActionError(message);
+    } finally {
+      setIsSubmittingQuickRegen(false);
+    }
+  };
+
   useEffect(() => {
     if (!run.project_id || includedFileIdSet.size === 0) {
       setIncludedFiles([]);
@@ -376,11 +450,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <button
             className="btn-secondary"
             type="button"
-            disabled
-            title="Currently recommended to export or view markdown and paste into a doc. Direct import has formatting issues being fixed."
-            style={{ opacity: 0.5, cursor: "not-allowed" }}
+            onClick={handleExportGoogleDoc}
+            disabled={!canExport || isExportingGdoc}
           >
-            Export to Google Docs
+            {isExportingGdoc ? "Exporting…" : "Export to Google Docs"}
           </button>
           <button
             className="btn-secondary"
@@ -545,14 +618,31 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           )}
         </div>
         <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-          Technical clarifications for the solutions architect designing this solution.
+          Technical clarifications for the solutions architect. Answer these to improve the scope.
         </p>
         {questions?.questions_for_expert && questions.questions_for_expert.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_expert.map((q, idx) => (
-              <li key={idx}>{q}</li>
+              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
+                <input
+                  type="text"
+                  placeholder="Your answer..."
+                  value={expertAnswers[idx] || ""}
+                  onChange={(e) => setExpertAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.75rem",
+                    borderRadius: "0.375rem",
+                    border: "1px solid #374151",
+                    background: "#1f2937",
+                    color: "#e5e7eb",
+                    fontSize: "0.875rem",
+                  }}
+                />
+              </div>
             ))}
-          </ul>
+          </div>
         ) : (
           <p className="muted">No expert questions generated yet.</p>
         )}
@@ -561,50 +651,53 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
         <h2 style={{ margin: 0 }}>Questions for Client</h2>
         <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-          Follow-up questions to ask the client to clarify requirements or fill gaps.
+          Follow-up questions to ask the client. Record their answers here for context.
         </p>
         {questions?.questions_for_client && questions.questions_for_client.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_client.map((q, idx) => (
-              <li key={idx}>{q}</li>
+              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
+                <input
+                  type="text"
+                  placeholder="Client's answer..."
+                  value={clientAnswers[idx] || ""}
+                  onChange={(e) => setClientAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.75rem",
+                    borderRadius: "0.375rem",
+                    border: "1px solid #374151",
+                    background: "#1f2937",
+                    color: "#e5e7eb",
+                    fontSize: "0.875rem",
+                  }}
+                />
+              </div>
             ))}
-          </ul>
+          </div>
         ) : (
           <p className="muted">No client questions generated yet.</p>
         )}
       </section>
 
-      {/* Quick Regen with Expert Answers */}
+      {/* Quick Regen with Answers Button */}
       {questions && (questions.questions_for_expert?.length || questions.questions_for_client?.length) && (
         <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <h2 style={{ margin: 0 }}>Provide Answers & Regenerate</h2>
+          <h2 style={{ margin: 0 }}>Regenerate with Answers</h2>
           <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-            Answer the expert questions above and click Quick Regen to improve the scope with your insights.
+            Click below to regenerate the scope using the answers you provided above.
           </p>
-          <textarea
-            placeholder="Paste your answers to the expert questions here..."
-            value={expertAnswers}
-            onChange={(e) => setExpertAnswers(e.target.value)}
-            rows={5}
-            style={{
-              width: "100%",
-              padding: "0.75rem",
-              borderRadius: "0.375rem",
-              border: "1px solid #374151",
-              background: "#1f2937",
-              color: "#e5e7eb",
-              fontSize: "0.875rem",
-              resize: "vertical",
-            }}
-          />
+          {actionError && <p className="error-text">{actionError}</p>}
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <Link
-              href={`/projects/${run.project_id}?quickRegen=${run.id}&context=${encodeURIComponent(expertAnswers)}`}
+            <button
               className="btn-primary"
-              style={{ textDecoration: "none" }}
+              type="button"
+              onClick={handleQuickRegenWithAnswers}
+              disabled={isSubmittingQuickRegen}
             >
-              Quick Regen with Answers
-            </Link>
+              {isSubmittingQuickRegen ? "Starting…" : "Quick Regen with Answers"}
+            </button>
           </div>
         </section>
       )}
@@ -761,11 +854,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             )}
 
             <div className="form-field">
-              <label htmlFor="expert-answers">Answers / Additional Context</label>
+              <label htmlFor="quick-regen-text">Answers / Additional Context</label>
               <textarea
-                id="expert-answers"
-                value={expertAnswers}
-                onChange={(e) => setExpertAnswers(e.target.value)}
+                id="quick-regen-text"
+                value={quickRegenText}
+                onChange={(e) => setQuickRegenText(e.target.value)}
                 rows={4}
                 placeholder="Provide answers to the expert questions above, or describe what changes you'd like to make..."
                 style={{ width: "100%" }}
@@ -778,7 +871,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               </button>
               <Link
                 className="btn-primary"
-                href={`/projects/${run.project_id}?quickRegen=${run.id}&context=${encodeURIComponent(expertAnswers)}`}
+                href={`/projects/${run.project_id}?quickRegen=${run.id}&context=${encodeURIComponent(quickRegenText)}`}
               >
                 Start Quick Regen
               </Link>
@@ -821,7 +914,19 @@ function FeedbackList({
 function formatDate(value?: string | null): string {
   if (!value) return "—";
   try {
-    return new Date(value).toLocaleString();
+    // Ensure UTC is correctly parsed - if no timezone indicator, treat as UTC
+    let dateStr = value;
+    if (!dateStr.endsWith("Z") && !dateStr.includes("+") && !dateStr.includes("-", 10)) {
+      dateStr = value + "Z";
+    }
+    return new Date(dateStr).toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short"
+    });
   } catch (err) {
     return value;
   }

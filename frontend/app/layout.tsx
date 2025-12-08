@@ -4,6 +4,7 @@ import "./globals.css";
 
 import { getSessionUser } from "@/lib/auth";
 import LogoutButton from "@/components/LogoutButton";
+import { APP_VERSION } from "@/lib/version";
 
 export const metadata: Metadata = {
   title: "Scope Doc Dashboard",
@@ -21,18 +22,19 @@ export default async function RootLayout({
     <html lang="en">
       <body>
         <nav>
-          <div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem" }}>
             <Link href="/projects">Scope Doc</Link>
+            <span style={{ fontSize: "0.7rem", color: "#6b7280" }}>v{APP_VERSION}</span>
           </div>
           <div className="nav-links">
-            <Link href="/projects">Projects</Link>
-            {user && <Link href="/settings">Settings</Link>}
             <Link href="/docs" style={{ color: "#a5b4fc" }}>📖 Documentation</Link>
+            <Link href="/projects" style={{ color: "#60a5fa" }}>📁 Projects</Link>
+            {user && <Link href="/settings" style={{ color: "#34d399" }}>⚙️ Settings</Link>}
             {user ? (
-              <>
-                <span>{user.email}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginLeft: "0.5rem" }}>
+                <span style={{ color: "#9ca3af" }}>{user.email}</span>
                 <LogoutButton />
-              </>
+              </div>
             ) : (
               <Link href="/login">Sign in</Link>
             )}
@@ -61,6 +63,9 @@ export default async function RootLayout({
               <div><strong style={{ color: "#d1d5db" }}>Vector Store:</strong> Validate full history pipeline, embeddings viewer/editor, easy past doc uploads</div>
               <div><strong style={{ color: "#d1d5db" }}>Questions:</strong> Improved visuals, per-question response forms, confidence scoring</div>
               <div><strong style={{ color: "#d1d5db" }}>Chatbot:</strong> Per-project and per-team chatbot experience</div>
+              <div><strong style={{ color: "#d1d5db" }}>Multi-Scope:</strong> Generate multiple scopes at once from the same inputs</div>
+              <div><strong style={{ color: "#d1d5db" }}>PSO → Scope:</strong> Reference previous PSO as source for scope generation</div>
+              <div><strong style={{ color: "#d1d5db" }}>Auto-detect:</strong> High-confidence solutions with quick-start buttons for scoping</div>
             </div>
           </div>
         )}

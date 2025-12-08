@@ -36,7 +36,20 @@ nav {
 
 .nav-links {
   display: flex;
+  align-items: center;
   gap: 1.5rem;
+}
+
+.nav-links a {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+.nav-links a:hover {
+  opacity: 0.8;
 }
 
 .card {

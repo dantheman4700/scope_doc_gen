@@ -32,14 +32,14 @@ export default function DocsPage() {
         <div style={{ display: "grid", gap: "1rem" }}>
           <div style={{ padding: "1rem", background: "#1f2937", borderRadius: "0.5rem" }}>
             <h3 style={{ margin: "0 0 0.5rem 0", color: "#60a5fa" }}>Scope Document</h3>
-            <p style={{ margin: 0, color: "#111827" }}>
+            <p style={{ margin: 0, color: "#e5e7eb" }}>
               Full technical scope documents with proposed solutions, timeline, pricing, and implementation details.
               Best for client-facing project proposals.
             </p>
           </div>
           <div style={{ padding: "1rem", background: "#1f2937", borderRadius: "0.5rem" }}>
             <h3 style={{ margin: "0 0 0.5rem 0", color: "#a78bfa" }}>PSO (Potential Solutions Overview)</h3>
-            <p style={{ margin: 0, color: "#111827" }}>
+            <p style={{ margin: 0, color: "#e5e7eb" }}>
               Comparison documents evaluating multiple solution approaches. Includes comparison matrices
               and recommendations. Best for internal decision-making.
             </p>

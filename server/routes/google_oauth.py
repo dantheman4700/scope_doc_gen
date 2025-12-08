@@ -29,6 +29,13 @@ google_oauth_router = APIRouter(prefix="/google-oauth", tags=["google-oauth"])
 router = google_oauth_router
 
 
+def get_user_team(user: models.User) -> Optional[models.Team]:
+    """Get the user's first team via TeamMember relationship."""
+    if user.teams:  # user.teams is List[TeamMember]
+        return user.teams[0].team
+    return None
+
+
 def get_user_google_access_token(user_id: UUID, db: Session) -> Optional[str]:
     """
     Get the Google access token for a user from their team settings.
@@ -41,10 +48,10 @@ def get_user_google_access_token(user_id: UUID, db: Session) -> Optional[str]:
         The access token string or None if not available
     """
     user = db.get(models.User, user_id)
-    if not user or not user.team_id:
+    if not user:
         return None
     
-    team = db.get(models.Team, user.team_id)
+    team = get_user_team(user)
     if not team:
         return None
     
@@ -74,13 +81,13 @@ async def get_google_connection_status(
     db: Session = Depends(db_session),
 ):
     """Check if the current user has a connected Google account."""
-    # Get user's Google tokens from their settings
-    user_record = db.get(models.User, user.id)
-    if not user_record:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    # Get Google tokens from team settings
+    team = get_user_team(user)
+    if not team:
+        return GoogleConnectionStatus(connected=False, can_export=False)
     
-    # Check if user has google_tokens in their profile
-    google_tokens = getattr(user_record, "google_tokens", None) or {}
+    settings = team.settings or {}
+    google_tokens = settings.get("google_tokens") or {}
     
     connected = is_token_valid(google_tokens)
     
@@ -144,18 +151,15 @@ async def google_oauth_callback(
         # Exchange code for tokens
         tokens = exchange_code_for_tokens(code)
         
-        # Store tokens in user record
-        # We need to add a google_tokens column to the users table
-        # For now, we'll store in the team settings
-        if user.team_id:
-            team = db.get(models.Team, user.team_id)
-            if team:
-                settings = team.settings or {}
-                settings["google_tokens"] = tokens
-                settings["google_connected_user_id"] = str(user.id)
-                team.settings = settings
-                db.commit()
-                logger.info(f"Google tokens stored for team {team.id}")
+        # Store tokens in team settings via TeamMember relationship
+        team = get_user_team(user)
+        if team:
+            settings = team.settings or {}
+            settings["google_tokens"] = tokens
+            settings["google_connected_user_id"] = str(user.id)
+            team.settings = settings
+            db.commit()
+            logger.info(f"Google tokens stored for team {team.id}")
         
         return RedirectResponse(url="/settings?google_connected=true")
         
@@ -170,10 +174,7 @@ async def disconnect_google_account(
     db: Session = Depends(db_session),
 ):
     """Disconnect the user's Google account."""
-    if not user.team_id:
-        return DisconnectResponse(success=True, message="No Google account connected")
-    
-    team = db.get(models.Team, user.team_id)
+    team = get_user_team(user)
     if not team:
         return DisconnectResponse(success=True, message="No Google account connected")
     
@@ -242,17 +243,16 @@ async def google_oauth_callback_post(
         # Exchange code for tokens
         tokens = exchange_code_for_tokens(payload.code)
         
-        # Store tokens in team settings
-        if user.team_id:
-            team = db.get(models.Team, user.team_id)
-            if team:
-                settings = team.settings or {}
-                settings["google_tokens"] = tokens
-                settings["google_connected_user_id"] = str(user.id)
-                team.settings = settings
-                db.commit()
-                logger.info(f"Google tokens stored for team {team.id}")
-                return OAuthCallbackResponse(connected=True)
+        # Store tokens in team settings via TeamMember relationship
+        team = get_user_team(user)
+        if team:
+            settings = team.settings or {}
+            settings["google_tokens"] = tokens
+            settings["google_connected_user_id"] = str(user.id)
+            team.settings = settings
+            db.commit()
+            logger.info(f"Google tokens stored for team {team.id}")
+            return OAuthCallbackResponse(connected=True)
         
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

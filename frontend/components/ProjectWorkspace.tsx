@@ -30,7 +30,18 @@ function formatBytes(size: number): string {
 function formatDate(value?: string | null): string {
   if (!value) return "—";
   try {
-    return new Date(value).toLocaleString();
+    // Ensure UTC is correctly parsed - if no timezone indicator, treat as UTC
+    let dateStr = value;
+    if (!dateStr.endsWith("Z") && !dateStr.includes("+") && !dateStr.includes("-", 10)) {
+      dateStr = value + "Z";
+    }
+    return new Date(dateStr).toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   } catch (error) {
     return value;
   }
