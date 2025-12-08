@@ -60,7 +60,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     () => new Set(initialFiles.map((file) => file.id))
   );
   const [quickRegenRun, setQuickRegenRun] = useState<RunSummary | null>(null);
-  const [runMode, setRunMode] = useState<string>("full");
+  const [runMode, setRunMode] = useState<string>("oneshot");
   const [instructions, setInstructions] = useState<string>("");
   const [researchMode, setResearchMode] = useState<string>("quick");
   const [vectorStoreEnabled, setVectorStoreEnabled] = useState<boolean>(true);
@@ -227,10 +227,10 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
     const isOneshot = runMode === "oneshot";
     const payload = {
       run_mode: runMode,
-      research_mode: isOneshot ? "none" : researchMode,
+      research_mode: researchMode,
       instructions: instructions.trim() || undefined,
-      enable_vector_store: isOneshot ? false : vectorStoreEnabled,
-      enable_web_search: isOneshot ? false : researchMode !== "none",
+      enable_vector_store: vectorStoreEnabled,
+      enable_web_search: researchMode !== "none",
       included_file_ids: Array.from(selectedFileIds),
       template_id: isOneshot && templateId ? templateId : undefined,
     };
@@ -440,8 +440,8 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                   }
                 }}
               >
-                <option value="full">Full (ingest + extraction)</option>
-                <option value="oneshot">One shot (template + docs, no research/vector store)</option>
+                <option value="oneshot">One shot (template + docs)</option>
+                <option value="full" disabled title="Full mode temporarily disabled">Full (ingest + extraction) — Coming soon</option>
               </select>
             </div>
             {runMode === "oneshot" && (
@@ -483,25 +483,33 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 name="research_mode"
                 value={researchMode}
                 onChange={(event) => setResearchMode(event.target.value)}
-                disabled={runMode === "oneshot"}
               >
                 <option value="none">None</option>
                 <option value="quick">Quick (Claude web search)</option>
                 <option value="full">Full (Perplexity)</option>
               </select>
+              <small style={{ color: "#6b7280" }}>
+                {runMode === "oneshot" 
+                  ? "Research APIs and services mentioned in docs"
+                  : "Research integration points and APIs"}
+              </small>
             </div>
             <div className="form-field">
-              <label htmlFor="vector-store">Vector store</label>
+              <label htmlFor="vector-store" title="Find similar past scopes to inform estimates">
+                Vector Search
+              </label>
               <select
                 id="vector-store"
                 name="vector_store"
                 value={vectorStoreEnabled ? "enabled" : "disabled"}
                 onChange={(event) => setVectorStoreEnabled(event.target.value === "enabled")}
-                disabled={runMode === "oneshot"}
               >
                 <option value="enabled">Enabled</option>
                 <option value="disabled">Disabled</option>
               </select>
+              <small style={{ color: "#6b7280" }}>
+                Find similar past scopes to inform estimates
+              </small>
             </div>
           </div>
 
@@ -535,6 +543,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 <th>Started</th>
                 <th>Status</th>
                 <th>Mode</th>
+                <th>Doc Type</th>
                 <th>Included files</th>
                 <th style={{ maxWidth: "300px" }}>Instructions</th>
                 <th style={{ width: "220px" }}>Actions</th>
@@ -543,7 +552,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
             <tbody>
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>No runs yet.</td>
+                  <td colSpan={7}>No runs yet.</td>
                 </tr>
               ) : (
                 runs.map((run) => {
@@ -559,6 +568,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                         <span className={chip.className}>{chip.label}</span>
                       </td>
                       <td>{run.run_mode}</td>
+                      <td>{run.template_type || "—"}</td>
                       <td>{includedCount}</td>
                       <td style={{ maxWidth: "300px", whiteSpace: "normal", wordBreak: "break-word" }}>
                         {instructionText}

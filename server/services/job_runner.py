@@ -18,10 +18,13 @@ from server.core.main import ScopeDocGenerator
 from server.core.research import ResearchMode
 from server.core.config import (
     DATA_ROOT,
+    HISTORY_ENABLED,
     HISTORY_EMBEDDING_MODEL,
+    HISTORY_TOPN,
     STORAGE_PROVIDER,
 )
 from server.core.history_profiles import ProfileEmbedder
+from server.core.history_retrieval import HistoryRetriever
 
 from ..storage import ensure_project_structure
 from ..db.session import get_session
@@ -53,6 +56,7 @@ class RunOptions:
     parent_run_id: Optional[str] = None
     variables_delta: Optional[str] = None
     template_id: Optional[str] = None  # Google Drive file ID for one-shot mode templates
+    template_type: Optional[str] = None  # "Scope", "PSO", etc.
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +71,7 @@ class RunOptions:
             "parent_run_id": self.parent_run_id,
             "variables_delta": self.variables_delta,
             "template_id": self.template_id,
+            "template_type": self.template_type,
         }
 
 
@@ -76,6 +81,7 @@ class JobStatus:
     project_id: str
     run_mode: str
     research_mode: str
+    template_type: Optional[str] = None
     status: str = JobState.PENDING
     created_at: datetime = field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
@@ -91,6 +97,7 @@ class JobStatus:
             "status": self.status,
             "run_mode": self.run_mode,
             "research_mode": self.research_mode,
+            "template_type": self.template_type,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -114,18 +121,29 @@ class JobRegistry:
 
     def create_job(self, project_id: str, options: RunOptions) -> JobStatus:
         job_id = uuid4()
+        # Determine template_type based on run_mode (default to "Scope" for oneshot)
+        template_type = options.template_type
+        if not template_type:
+            if options.run_mode == "oneshot":
+                template_type = "Scope"
+            elif options.run_mode == "full":
+                template_type = "Full"
+            else:
+                template_type = options.run_mode.capitalize()
+        
         job = JobStatus(
             id=job_id,
             project_id=project_id,
             run_mode=options.run_mode,
             research_mode=options.research_mode,
+            template_type=template_type,
             params=options.to_dict(),
         )
 
         with self._lock:
             self._jobs[job_id] = job
 
-        self._ensure_run_record(job, options)
+        self._ensure_run_record(job, options, template_type)
         self._executor.submit(self._execute_job, job_id, options)
         return job
 
@@ -140,7 +158,7 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def _ensure_run_record(self, job: JobStatus, options: RunOptions) -> None:
+    def _ensure_run_record(self, job: JobStatus, options: RunOptions, template_type: Optional[str] = None) -> None:
         with get_session() as session:
             run_record = session.get(models.Run, job.id)
             if run_record is None:
@@ -152,6 +170,7 @@ class JobRegistry:
 
             run_record.mode = options.run_mode
             run_record.research_mode = options.research_mode
+            run_record.template_type = template_type
             run_record.status = JobState.PENDING
             run_record.params = options.to_dict()
             run_record.included_file_ids = options.included_file_ids
@@ -236,10 +255,23 @@ class JobRegistry:
         LOGGER.info(f"Starting job {job_id} in {options.run_mode} mode")
 
         try:
+            # Create history retriever if vector search is enabled and we have a vector store
+            history_retriever = None
+            if options.enable_vector_store and self._vector_store and HISTORY_ENABLED:
+                try:
+                    history_retriever = HistoryRetriever(
+                        vector_store=self._vector_store,
+                        model_name=HISTORY_EMBEDDING_MODEL,
+                        top_n=HISTORY_TOPN,
+                    )
+                except Exception as hr_exc:
+                    LOGGER.warning(f"Failed to initialize history retriever: {hr_exc}")
+
             generator = ScopeDocGenerator(
                 input_dir=paths.input_dir,
                 output_dir=run_dir / "outputs",
                 project_dir=run_dir,
+                history_retriever=history_retriever,
             )
 
             feedback: Optional[dict] = None
@@ -252,6 +284,9 @@ class JobRegistry:
                     instructions=options.instructions_override,
                     step_callback=step_callback,
                     template_id=options.template_id,
+                    research_mode=options.research_mode,
+                    enable_vector_store=options.enable_vector_store,
+                    enable_web_search=options.enable_web_search,
                 )
                 feedback = generator.last_feedback
             else:

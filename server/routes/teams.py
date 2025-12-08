@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -101,3 +101,76 @@ async def get_team(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a team member")
 
     return TeamDetailResponse.model_validate(team)
+
+
+# ---- Team Settings ----
+
+class TeamSettings(BaseModel):
+    """Team-level settings for scope generation defaults and prompts."""
+    scope_prompt: Optional[str] = None
+    pso_prompt: Optional[str] = None
+    image_prompt: Optional[str] = None
+    pso_image_prompt: Optional[str] = None
+    enable_solution_image: bool = False  # Disabled by default until prompts provided
+    enable_pso_image: bool = False
+    scope_template_id: Optional[str] = None  # Google Doc ID for scope template
+    pso_template_id: Optional[str] = None  # Google Doc ID for PSO template
+    vector_similar_limit: int = 3
+    enable_oneshot_research: bool = True
+    enable_oneshot_vector: bool = True
+    research_mode_default: str = "quick"
+    image_size: str = "1024x1024"
+
+    class Config:
+        extra = "ignore"
+
+
+class TeamSettingsResponse(TeamSettings):
+    team_id: UUID
+
+
+def _get_team_for_user(db: Session, team_id: UUID, user_id: UUID) -> models.Team:
+    """Helper to get a team and verify user membership."""
+    team = db.get(models.Team, team_id)
+    if not team:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+
+    is_member = (
+        db.query(models.TeamMember)
+        .filter_by(team_id=team_id, user_id=user_id)
+        .one_or_none()
+    )
+    if not is_member:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a team member")
+    return team
+
+
+@router.get("/{team_id}/settings", response_model=TeamSettingsResponse)
+async def get_team_settings(
+    team_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+) -> TeamSettingsResponse:
+    """Get team settings."""
+    team = _get_team_for_user(db, team_id, current_user.id)
+    settings_data: Dict[str, Any] = team.settings or {}
+    settings = TeamSettings(**settings_data)
+    return TeamSettingsResponse(team_id=team.id, **settings.model_dump())
+
+
+@router.put("/{team_id}/settings", response_model=TeamSettingsResponse)
+async def update_team_settings(
+    team_id: UUID,
+    payload: TeamSettings,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+) -> TeamSettingsResponse:
+    """Update team settings."""
+    team = _get_team_for_user(db, team_id, current_user.id)
+    merged = {**(team.settings or {}), **payload.model_dump(exclude_unset=True)}
+    team.settings = merged
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    settings = TeamSettings(**team.settings)
+    return TeamSettingsResponse(team_id=team.id, **settings.model_dump())

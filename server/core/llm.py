@@ -11,6 +11,7 @@ from anthropic import Anthropic
 from .config import (
     ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
+    CLAUDE_THINKING_BUDGET,
     MAX_TOKENS,
     TEMPERATURE,
     ENABLE_WEB_RESEARCH,
@@ -91,6 +92,7 @@ class ClaudeExtractor:
                     model=self.model,
                     max_tokens=MAX_TOKENS,
                     temperature=TEMPERATURE,
+                    thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                     system=system_prompt,
                     messages=[
                         {"role": "user", "content": message_content}
@@ -162,6 +164,7 @@ class ClaudeExtractor:
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 temperature=max(0.1, TEMPERATURE),
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
                     {
@@ -179,7 +182,10 @@ class ClaudeExtractor:
             print(f"[ERROR] Failed to update variables: {exc}")
             return current_variables
 
-        response_text = response.content[0].text
+        response_text = self._extract_text_from_response(response)
+        if not response_text:
+            print("[WARN] No text content in response; returning original values")
+            return current_variables
         try:
             return self._parse_response(response_text)
         except Exception:
@@ -244,13 +250,14 @@ class ClaudeExtractor:
             {"type": "text", "text": "\n".join(user_parts)}
         ]
 
-        # Use structured outputs (beta) to force JSON shape
-        logger.info(f"Calling Claude API for oneshot generation (model={self.model}, timeout=300s)")
+        # Use structured outputs (beta) to force JSON shape with extended thinking
+        logger.info(f"Calling Claude API for oneshot generation (model={self.model}, timeout=300s, thinking_budget={CLAUDE_THINKING_BUDGET})")
         try:
             response = self.client.beta.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 temperature=max(0.2, TEMPERATURE),
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
                     {
@@ -302,20 +309,23 @@ class ClaudeExtractor:
             logger.warning("Response hit max_tokens limit - output may be incomplete or invalid")
             raise ValueError(f"Response was cut off due to token limit ({MAX_TOKENS} tokens). The generated content may be incomplete. Try increasing MAX_TOKENS or reducing input size.")
 
-        # Structured output returns JSON in the first content block
+        # Extract text from response - with thinking enabled, need to find text blocks
         response_text = ""
         try:
             if not hasattr(response, 'content') or not response.content:
                 raise ValueError("Claude response has no content blocks")
-            block = response.content[0]
-            # text is present in structured outputs
-            if hasattr(block, "text"):
-                response_text = block.text or ""
-            elif hasattr(block, "type") and block.type == "text":
-                response_text = getattr(block, "text", "") or ""
-            else:
-                # Fallback: try to get any string representation
-                response_text = str(block)
+            
+            # Search for text blocks (skip thinking blocks)
+            for block in response.content:
+                if hasattr(block, "type") and block.type == "text":
+                    if hasattr(block, "text") and block.text:
+                        response_text = block.text
+                        break
+                elif hasattr(block, "text") and block.text:
+                    # Fallback for blocks without explicit type
+                    response_text = block.text
+                    break
+            
             logger.info(f"Extracted response text, length: {len(response_text)}")
             if response_text:
                 # Log first 200 chars for debugging
@@ -371,6 +381,7 @@ class ClaudeExtractor:
                 model=self.model,
                 max_tokens=min(1500, MAX_TOKENS),
                 temperature=0.2,
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 system=system_prompt,
                 messages=[
                     {
@@ -384,6 +395,58 @@ class ClaudeExtractor:
         except Exception as exc:
             print(f"[WARN] Feedback generation failed: {exc}")
             return {}
+
+    def generate_questions(
+        self,
+        *,
+        scope_markdown: str,
+    ) -> Dict[str, List[str]]:
+        """
+        Generate clarifying questions based on the scope document.
+        
+        Returns a dict with:
+        - questions_for_expert: Technical clarifications for solutions architect
+        - questions_for_client: Follow-up questions to ask the client
+        """
+        system_prompt = (
+            "You are a senior solutions architect reviewing a scope document. "
+            "Generate two sets of questions:\n"
+            "1. 'questions_for_expert': Technical clarifications that a solutions architect "
+            "should answer before implementation (e.g., architecture decisions, integration details, "
+            "technical feasibility concerns).\n"
+            "2. 'questions_for_client': Follow-up questions that should be asked to the client "
+            "to fill in gaps or clarify requirements (e.g., business priorities, edge cases, "
+            "preferences, constraints).\n\n"
+            "Return ONLY valid JSON with these two keys, each containing a list of 3-7 concise questions. "
+            "Focus on actionable, specific questions that would materially improve the scope."
+        )
+
+        user_prompt = f"SCOPE DOCUMENT:\n\n{scope_markdown}\n\nGenerate clarifying questions for this scope."
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                temperature=0.3,
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": user_prompt}],
+                    }
+                ],
+            )
+            text = self._extract_text_from_response(response)
+            result = self._parse_feedback_json(text)
+            # Ensure required keys exist
+            return {
+                "questions_for_expert": result.get("questions_for_expert", []),
+                "questions_for_client": result.get("questions_for_client", []),
+            }
+        except Exception as exc:
+            print(f"[WARN] Question generation failed: {exc}")
+            return {"questions_for_expert": [], "questions_for_client": []}
 
     def extract_variables_with_raw(
         self,
@@ -415,6 +478,7 @@ class ClaudeExtractor:
                     model=self.model,
                     max_tokens=MAX_TOKENS,
                     temperature=TEMPERATURE,
+                    thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                     system=system_prompt,
                     messages=[
                         {"role": "user", "content": message_content}
@@ -496,12 +560,16 @@ Please provide the refined value for this variable. Return ONLY the value in the
                 model=self.model,
                 max_tokens=4000,
                 temperature=TEMPERATURE,
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                 messages=[
                     {"role": "user", "content": prompt}
                 ]
             )
             
-            response_text = response.content[0].text.strip()
+            response_text = self._extract_text_from_response(response).strip()
+            if not response_text:
+                print("[WARN] No text content in refinement response")
+                return current_value
             
             # Try to parse as JSON if it looks like JSON
             if response_text.startswith('[') or response_text.startswith('{'):
@@ -683,10 +751,11 @@ INSTRUCTIONS:
                         model=self.model,
                         max_tokens=min(3000, MAX_TOKENS),
                         temperature=0.1,
+                        thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
                         system=system,
                         messages=[{"role": "user", "content": user_chunk}],
                     )
-                    part = response.content[0].text.strip()
+                    part = self._extract_text_from_response(response).strip()
                     if part:
                         filtered_parts.append(part)
                     break

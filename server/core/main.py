@@ -514,15 +514,21 @@ class ScopeDocGenerator:
         instructions: Optional[str] = None,
         step_callback: Optional[StepCallback] = None,
         template_id: Optional[str] = None,
+        research_mode: str = "none",
+        enable_vector_store: bool = False,
+        enable_web_search: bool = False,
     ) -> str:
         """
-        Generate a scope document in one shot (no research, no vector store, no variable extraction).
+        Generate a scope document in one shot with optional research and vector search.
         
         Args:
             project_identifier: Optional project identifier hint
             instructions: Optional additional instructions
             step_callback: Optional callback for step notifications
             template_id: Optional Google Drive file ID for template (if not provided, uses default template)
+            research_mode: "none", "quick" (Claude web search), or "full" (Perplexity)
+            enable_vector_store: Whether to query vector store for similar scopes
+            enable_web_search: Whether to enable web search in the LLM call
         """
         print("="*80)
         print("SCOPE DOCUMENT GENERATOR (ONE SHOT)")
@@ -574,6 +580,62 @@ class ScopeDocGenerator:
 
         print(f"[OK] Combined document length: {len(combined)} characters")
 
+        # Step 2.5: Optional research (Perplexity for full mode)
+        research_context = ""
+        if research_mode == "full":
+            notify("research", "started", "perplexity")
+            try:
+                research_manager = ResearchManager(ResearchMode.FULL)
+                # Build a simple context pack from the combined docs
+                context_pack = {
+                    "integration_notes": [],
+                    "pain_points": [],
+                    "unknowns": [],
+                }
+                findings = research_manager.gather_research(context_pack, project_identifier)
+                if findings:
+                    research_lines = ["[RESEARCH FINDINGS]"]
+                    for finding in findings:
+                        research_lines.append(f"- [{finding.provider}] {finding.query}")
+                        research_lines.append(f"  {finding.summary}")
+                        if finding.references:
+                            research_lines.append(f"  Refs: {', '.join(finding.references[:3])}")
+                    research_context = "\n".join(research_lines)
+                    print(f"[OK] Research completed: {len(findings)} finding(s)")
+                notify("research", "completed", f"{len(findings)} finding(s)")
+            except Exception as research_exc:
+                logger.warning(f"Research failed: {research_exc}")
+                notify("research", "failed", str(research_exc))
+
+        # Step 2.6: Optional vector search for similar scopes
+        vector_context = ""
+        if enable_vector_store and self.history_retriever:
+            notify("vector_search", "started", None)
+            try:
+                # Build a minimal context for similarity search
+                history_block = self.history_retriever.fetch_reference_block({
+                    "integration_notes": [],
+                    "pain_points": [],
+                    "unknowns": [],
+                })
+                if history_block:
+                    vector_context = history_block
+                    print(f"[OK] Found similar scopes for context")
+                notify("vector_search", "completed", "found similar scopes" if history_block else "no similar scopes")
+            except Exception as vector_exc:
+                logger.warning(f"Vector search failed: {vector_exc}")
+                notify("vector_search", "failed", str(vector_exc))
+
+        # Combine additional context
+        additional_context = ""
+        if research_context:
+            additional_context += "\n\n" + research_context
+        if vector_context:
+            additional_context += "\n\n" + vector_context
+        if additional_context:
+            combined += additional_context
+            print(f"[OK] Added {len(additional_context)} chars of research/vector context")
+
         # Step 3: Load template (from Google Drive if template_id provided, otherwise default)
         template_text = self.renderer.template_content
         if template_id:
@@ -596,7 +658,7 @@ class ScopeDocGenerator:
                 notify("template", "failed", str(template_exc))
                 raise ValueError(f"Failed to load template from Google Drive: {template_exc}")
 
-        # Step 4: One-shot generation (no research / history / vector store)
+        # Step 4: One-shot generation with optional research/vector context added above
         notify("extract", "started", "oneshot")
         logger.info("Starting oneshot markdown generation")
         markdown = ""

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import type { ProjectFile, RunFeedback, RunStep, RunSummary } from "@/types/backend";
+import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary } from "@/types/backend";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -24,6 +24,12 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
   const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
   const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
+  const [isGeneratingQuestions, setIsGeneratingQuestions] = useState<boolean>(false);
+  const [isViewingMarkdown, setIsViewingMarkdown] = useState<boolean>(false);
+  const [markdownContent, setMarkdownContent] = useState<string>("");
+  const [isLoadingMarkdown, setIsLoadingMarkdown] = useState<boolean>(false);
+  const [showQuickRegen, setShowQuickRegen] = useState<boolean>(false);
+  const [expertAnswers, setExpertAnswers] = useState<string>("");
   // Included files do not change after run creation, so load once and never re-render them on poll
   const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
   const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
@@ -83,6 +89,18 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     const fromParams = (run.params?.feedback as RunFeedback | undefined) ?? null;
     return direct ?? fromParams ?? null;
   }, [run.feedback, run.params]);
+
+  const questions: RunQuestions | null = useMemo(() => {
+    const expertQuestions = (run.params?.questions_for_expert as string[] | undefined) ?? [];
+    const clientQuestions = (run.params?.questions_for_client as string[] | undefined) ?? [];
+    if (expertQuestions.length === 0 && clientQuestions.length === 0) {
+      return null;
+    }
+    return {
+      questions_for_expert: expertQuestions,
+      questions_for_client: clientQuestions,
+    };
+  }, [run.params]);
 
   const canExport = run.status.toLowerCase() === "success";
 
@@ -177,6 +195,66 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
+  const handleGenerateQuestions = async () => {
+    setActionError(null);
+    setActionMessage(null);
+    setIsGeneratingQuestions(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/generate-questions`, { method: "POST" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Question generation failed (${response.status})`;
+        throw new Error(detail);
+      }
+      const data = (await response.json()) as { questions_for_expert?: string[]; questions_for_client?: string[] };
+      // Update run params locally to reflect the new questions
+      setRun((prev) => ({
+        ...prev,
+        params: {
+          ...prev.params,
+          questions_for_expert: data.questions_for_expert || [],
+          questions_for_client: data.questions_for_client || [],
+        },
+      }));
+      setActionMessage("Questions generated successfully");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Question generation failed";
+      setActionError(message);
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  };
+
+  const handleViewMarkdown = async () => {
+    setActionError(null);
+    setIsLoadingMarkdown(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/download-md`);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        const detail = payload.detail ?? `Failed to load markdown (${response.status})`;
+        throw new Error(detail);
+      }
+      const text = await response.text();
+      setMarkdownContent(text);
+      setIsViewingMarkdown(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load markdown";
+      setActionError(message);
+    } finally {
+      setIsLoadingMarkdown(false);
+    }
+  };
+
+  const handleCopyMarkdown = async () => {
+    try {
+      await navigator.clipboard.writeText(markdownContent);
+      setActionMessage("Markdown copied to clipboard");
+    } catch {
+      setActionError("Failed to copy to clipboard");
+    }
+  };
+
   useEffect(() => {
     if (!run.project_id || includedFileIdSet.size === 0) {
       setIncludedFiles([]);
@@ -246,6 +324,14 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <button
             className="btn-secondary"
             type="button"
+            onClick={handleViewMarkdown}
+            disabled={!canExport || isLoadingMarkdown}
+          >
+            {isLoadingMarkdown ? "Loading…" : "View MD"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
             onClick={() => handleDownload("md")}
             disabled={!canExport || isDownloadingMd}
           >
@@ -262,18 +348,28 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <button
             className="btn-secondary"
             type="button"
-            onClick={handleExportGoogleDoc}
-            disabled={!canExport || isExportingGdoc}
+            disabled
+            title="Currently recommended to export or view markdown and paste into a doc. Direct import has formatting issues being fixed."
+            style={{ opacity: 0.5, cursor: "not-allowed" }}
           >
-            {isExportingGdoc ? "Exporting…" : "Export to Google Docs"}
+            Export to Google Docs
           </button>
           <button
             className="btn-secondary"
             type="button"
             onClick={handleEmbed}
             disabled={!canExport || isEmbedding}
+            title="Add this scope to the historical database for future reference"
           >
-            {isEmbedding ? "Embedding…" : "Add to vector store"}
+            {isEmbedding ? "Saving…" : "Save to Vector Store"}
+          </button>
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={() => setShowQuickRegen(true)}
+            disabled={!canExport}
+          >
+            Quick Regen
           </button>
           <button className="btn-secondary" type="button" onClick={() => setIsPolling(true)} disabled={isPolling}>
             {isPolling ? "Polling…" : "Refresh"}
@@ -294,6 +390,50 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           </div>
         ) : (
           <p className="muted">No feedback captured for this run.</p>
+        )}
+      </section>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ margin: 0 }}>Questions for Expert</h2>
+          {canExport && !questions && (
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={handleGenerateQuestions}
+              disabled={isGeneratingQuestions}
+            >
+              {isGeneratingQuestions ? "Generating…" : "Generate Questions"}
+            </button>
+          )}
+        </div>
+        <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
+          Technical clarifications for the solutions architect designing this solution.
+        </p>
+        {questions?.questions_for_expert && questions.questions_for_expert.length > 0 ? (
+          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+            {questions.questions_for_expert.map((q, idx) => (
+              <li key={idx}>{q}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">No expert questions generated yet.</p>
+        )}
+      </section>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <h2 style={{ margin: 0 }}>Questions for Client</h2>
+        <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
+          Follow-up questions to ask the client to clarify requirements or fill gaps.
+        </p>
+        {questions?.questions_for_client && questions.questions_for_client.length > 0 ? (
+          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+            {questions.questions_for_client.map((q, idx) => (
+              <li key={idx}>{q}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">No client questions generated yet.</p>
         )}
       </section>
 
@@ -345,7 +485,135 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           </tbody>
         </table>
       </section>
+
+      {/* Markdown Viewer Modal */}
+      {isViewingMarkdown && (
+        <div
+          className="modal-backdrop"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 1000,
+            padding: "2rem",
+          }}
+          onClick={() => setIsViewingMarkdown(false)}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: "900px",
+              width: "100%",
+              maxHeight: "90vh",
+              display: "flex",
+              flexDirection: "column",
+              gap: "1rem",
+              padding: "1.5rem",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0 }}>Markdown Preview</h2>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button className="btn-secondary" type="button" onClick={handleCopyMarkdown}>
+                  Copy to Clipboard
+                </button>
+                <button className="btn-secondary" type="button" onClick={() => setIsViewingMarkdown(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                background: "#1a1a2e",
+                borderRadius: "0.5rem",
+                padding: "1rem",
+              }}
+            >
+              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.875rem", lineHeight: 1.6 }}>
+                {markdownContent}
+              </pre>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* Quick Regen Modal */}
+      {showQuickRegen && (
+        <div
+          className="modal-backdrop"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 1000,
+            padding: "2rem",
+          }}
+          onClick={() => setShowQuickRegen(false)}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: "600px",
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              gap: "1rem",
+              padding: "1.5rem",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: 0 }}>Quick Regenerate</h2>
+            <p style={{ color: "#9ca3af", margin: 0 }}>
+              Make adjustments to this scope without reprocessing all documents.
+            </p>
+            
+            {questions?.questions_for_expert && questions.questions_for_expert.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Expert Questions to Address</h3>
+                <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.875rem", color: "#d1d5db" }}>
+                  {questions.questions_for_expert.slice(0, 3).map((q, idx) => (
+                    <li key={idx}>{q}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="form-field">
+              <label htmlFor="expert-answers">Answers / Additional Context</label>
+              <textarea
+                id="expert-answers"
+                value={expertAnswers}
+                onChange={(e) => setExpertAnswers(e.target.value)}
+                rows={4}
+                placeholder="Provide answers to the expert questions above, or describe what changes you'd like to make..."
+                style={{ width: "100%" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
+              <button className="btn-secondary" type="button" onClick={() => setShowQuickRegen(false)}>
+                Cancel
+              </button>
+              <Link
+                className="btn-primary"
+                href={`/projects/${run.project_id}?quickRegen=${run.id}&context=${encodeURIComponent(expertAnswers)}`}
+              >
+                Start Quick Regen
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

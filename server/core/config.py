@@ -102,6 +102,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 # Default to Opus 4.5 unless overridden via env var
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-5")
 CLAUDE_CONTEXT_LIMIT = int(os.getenv("CLAUDE_CONTEXT_LIMIT", "100000"))
+# Extended thinking budget (tokens allocated for Claude's internal reasoning)
+CLAUDE_THINKING_BUDGET = int(os.getenv("CLAUDE_THINKING_BUDGET", "12000"))
+
+# Gemini image generation (Nano Banana Pro)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_IMAGE_SIZE = os.getenv("GEMINI_IMAGE_SIZE", "1024x1024")
 
 # Session configuration
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")

@@ -69,6 +69,7 @@ class RunStatusResponse(BaseModel):
     status: str
     run_mode: str
     research_mode: str
+    template_type: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -132,6 +133,7 @@ def _job_to_response(job: JobStatus) -> RunStatusResponse:
     data["parent_run_id"] = params.get("parent_run_id")
     data["extracted_variables_artifact_id"] = params.get("extracted_variables_artifact_id")
     data["feedback"] = params.get("feedback")
+    data["template_type"] = params.get("template_type")
     return RunStatusResponse(**data)
 
 
@@ -142,6 +144,7 @@ def _db_run_to_response(run: models.Run) -> RunStatusResponse:
         status=run.status,
         run_mode=run.mode,
         research_mode=run.research_mode,
+        template_type=run.template_type,
         created_at=run.created_at,
         started_at=run.started_at,
         finished_at=run.finished_at,
@@ -242,9 +245,9 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
     run_mode = payload.run_mode
     if parent_run_id:
         run_mode = "fast"
-    # Enforce oneshot constraints: no vector store, no web search
-    enable_vector_store = False if run_mode == "oneshot" else payload.enable_vector_store
-    enable_web_search = False if run_mode == "oneshot" else payload.enable_web_search
+    # Allow research and vector search for oneshot mode
+    enable_vector_store = payload.enable_vector_store
+    enable_web_search = payload.enable_web_search
     options = RunOptions(
         interactive=payload.interactive,
         project_identifier=payload.project_identifier,
@@ -434,6 +437,69 @@ async def embed_run_output(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to store embedding: {exc}")
 
     return {"embedding_id": str(embedding_id), "profile_text": profile_text}
+
+
+@run_router.post("/{run_id}/generate-questions")
+async def generate_run_questions(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """
+    Generate clarifying questions for a completed run's scope document.
+    Returns questions for both experts (solutions architects) and clients.
+    """
+    from server.core.llm import ClaudeExtractor
+
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before generating questions")
+
+    # Find the rendered doc artifact
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        scope_markdown = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    # Generate questions using Claude
+    try:
+        extractor = ClaudeExtractor()
+        questions = extractor.generate_questions(scope_markdown=scope_markdown)
+    except Exception as exc:
+        logger.exception("Failed to generate questions")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to generate questions: {exc}")
+
+    # Store questions in the run params
+    params = dict(run.params or {})
+    params["questions_for_expert"] = questions.get("questions_for_expert", [])
+    params["questions_for_client"] = questions.get("questions_for_client", [])
+    run.params = params
+    db.add(run)
+    db.commit()
+
+    return questions
 
 
 @run_router.get("/{run_id}/download-docx")

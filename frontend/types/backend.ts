@@ -36,12 +36,18 @@ export interface RunFeedback {
   notes?: string | null;
 }
 
+export interface RunQuestions {
+  questions_for_expert?: string[];
+  questions_for_client?: string[];
+}
+
 export interface RunSummary {
   id: string;
   project_id: string;
   status: string;
   run_mode: string;
   research_mode: string;
+  template_type?: string | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;

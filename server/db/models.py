@@ -46,6 +46,7 @@ class Team(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     owner_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     owner: Mapped["User"] = relationship("User")
     members: Mapped[List["TeamMember"]] = relationship("TeamMember", back_populates="team", cascade="all, delete-orphan")
@@ -112,6 +113,7 @@ class Run(Base):
     project_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     mode: Mapped[str] = mapped_column(String(20), nullable=False)
     research_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    template_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False), nullable=True)
