@@ -780,3 +780,232 @@ async def export_run_google_doc(
 
     return {"doc_id": doc_id, "doc_url": doc_url, "status": "created"}
 
+
+# =============================================================================
+# Run Versioning Endpoints
+# =============================================================================
+
+class RunVersionResponse(BaseModel):
+    id: UUID
+    run_id: UUID
+    version_number: int
+    markdown: Optional[str] = None
+    feedback: Optional[dict] = None
+    questions_for_expert: Optional[List[str]] = None
+    questions_for_client: Optional[List[str]] = None
+    graphic_path: Optional[str] = None
+    created_at: datetime
+    regen_context: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RegenerateRequest(BaseModel):
+    answers: str = Field(..., description="Answers to questions or context for regeneration")
+    regen_graphic: bool = Field(False, description="Whether to regenerate the solution graphic")
+    extra_research: bool = Field(False, description="Whether to perform additional research")
+    research_provider: str = Field("claude", pattern="^(claude|perplexity)$", description="Research provider if extra_research is enabled")
+
+
+class RegenerateResponse(BaseModel):
+    version_id: UUID
+    version_number: int
+    message: str
+
+
+@run_router.get("/{run_id}/versions", response_model=List[RunVersionResponse])
+async def list_run_versions(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+):
+    """List all versions for a run."""
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    versions = (
+        db.query(models.RunVersion)
+        .filter(models.RunVersion.run_id == run_id)
+        .order_by(models.RunVersion.version_number.desc())
+        .all()
+    )
+    
+    return versions
+
+
+@run_router.get("/{run_id}/versions/{version_number}", response_model=RunVersionResponse)
+async def get_run_version(
+    run_id: UUID,
+    version_number: int,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+):
+    """Get a specific version of a run."""
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    version = (
+        db.query(models.RunVersion)
+        .filter(
+            models.RunVersion.run_id == run_id,
+            models.RunVersion.version_number == version_number
+        )
+        .first()
+    )
+    
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    
+    return version
+
+
+@run_router.post("/{run_id}/regenerate", response_model=RegenerateResponse)
+async def regenerate_run(
+    run_id: UUID,
+    request: Request,
+    payload: RegenerateRequest,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """
+    Regenerate a run's output, creating a new version.
+    
+    This takes the existing run's inputs + the provided answers and creates
+    an improved version of the scope document without creating a new run.
+    """
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    if run.status != "success":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only regenerate successful runs"
+        )
+    
+    # Get the current latest version number
+    latest_version = (
+        db.query(models.RunVersion)
+        .filter(models.RunVersion.run_id == run_id)
+        .order_by(models.RunVersion.version_number.desc())
+        .first()
+    )
+    
+    next_version_number = (latest_version.version_number + 1) if latest_version else 2
+    
+    # Get the original markdown from the artifact
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .first()
+    )
+    
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Original rendered document not found"
+        )
+    
+    project_id_str = str(run.project_id)
+    
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        original_markdown = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read original document: {exc}"
+        )
+    
+    # Import the LLM functions here to avoid circular imports
+    from server.core.llm import regenerate_with_answers, generate_questions
+    
+    # Regenerate the markdown with the provided answers
+    try:
+        new_markdown = await run_in_threadpool(
+            regenerate_with_answers,
+            original_markdown,
+            payload.answers,
+            payload.extra_research,
+            payload.research_provider,
+        )
+    except Exception as exc:
+        logger.exception("Failed to regenerate markdown")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Regeneration failed: {exc}"
+        )
+    
+    # Generate new questions for this version
+    try:
+        questions = await run_in_threadpool(generate_questions, new_markdown)
+    except Exception as exc:
+        logger.warning(f"Failed to generate questions for new version: {exc}")
+        questions = {"questions_for_expert": [], "questions_for_client": []}
+    
+    # Handle graphic regeneration if requested
+    graphic_path = None
+    if payload.regen_graphic:
+        try:
+            from server.core.image_gen import generate_scope_image, GENAI_AVAILABLE
+            from server.core.config import GEMINI_IMAGE_RESOLUTION, GEMINI_IMAGE_ASPECT_RATIO
+            
+            if GENAI_AVAILABLE:
+                # Extract proposed solution section for image prompt
+                proposed_solution = ""
+                lines = new_markdown.split("\n")
+                in_solution = False
+                for line in lines:
+                    if "## Proposed Solution" in line or "## Solution" in line:
+                        in_solution = True
+                        continue
+                    if in_solution and line.startswith("## "):
+                        break
+                    if in_solution:
+                        proposed_solution += line + "\n"
+                
+                if proposed_solution:
+                    image_data = await run_in_threadpool(
+                        generate_scope_image,
+                        proposed_solution[:2000],
+                        GEMINI_IMAGE_RESOLUTION,
+                        GEMINI_IMAGE_ASPECT_RATIO,
+                    )
+                    
+                    if image_data:
+                        # Save the image
+                        version_graphic_filename = f"version_{next_version_number}_graphic.png"
+                        version_graphic_path = Path(DATA_ROOT) / "projects" / project_id_str / "output" / version_graphic_filename
+                        version_graphic_path.parent.mkdir(parents=True, exist_ok=True)
+                        version_graphic_path.write_bytes(image_data)
+                        graphic_path = str(version_graphic_path)
+        except Exception as exc:
+            logger.warning(f"Failed to regenerate graphic: {exc}")
+    
+    # Create the new version record
+    new_version = models.RunVersion(
+        run_id=run_id,
+        version_number=next_version_number,
+        markdown=new_markdown,
+        feedback=None,  # Could add feedback generation here
+        questions_for_expert=questions.get("questions_for_expert", []),
+        questions_for_client=questions.get("questions_for_client", []),
+        graphic_path=graphic_path,
+        regen_context=payload.answers,
+    )
+    
+    db.add(new_version)
+    db.commit()
+    db.refresh(new_version)
+    
+    logger.info(f"Created version {next_version_number} for run {run_id}")
+    
+    return RegenerateResponse(
+        version_id=new_version.id,
+        version_number=next_version_number,
+        message=f"Successfully created version {next_version_number}"
+    )
+

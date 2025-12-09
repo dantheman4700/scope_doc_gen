@@ -172,34 +172,120 @@ function SettingsContent() {
   }
 
   return (
-    <div className="card" style={{ maxWidth: 800, margin: "0 auto", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Team Settings</h1>
-        <Link href="/projects" className="btn-secondary">
-          Back to Projects
-        </Link>
-      </div>
-
-      {message && (
-        <div className={message.type === "success" ? "success-text" : "error-text"}>
-          {message.text}
+    <div style={{ maxWidth: 800, margin: "0 auto", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      {/* User Settings Card */}
+      <div className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h1 style={{ margin: 0 }}>👤 User Settings</h1>
+          <Link href="/projects" className="btn-secondary">
+            Back to Projects
+          </Link>
         </div>
-      )}
 
-      <div className="form-field">
-        <label htmlFor="team-select">Team</label>
-        <select
-          id="team-select"
-          value={selectedTeamId}
-          onChange={(e) => setSelectedTeamId(e.target.value)}
-        >
-          {teams.map((team) => (
-            <option key={team.id} value={team.id}>
-              {team.name}
-            </option>
-          ))}
-        </select>
+        {message && (
+          <div className={message.type === "success" ? "success-text" : "error-text"}>
+            {message.text}
+          </div>
+        )}
+
+        <section>
+          <h2>Google Account Connection</h2>
+          <p style={{ color: "#9ca3af", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
+            Connect your personal Google account to export scopes directly to your Google Drive.
+          </p>
+
+          <div style={{ 
+            padding: "1rem", 
+            background: googleStatus?.connected ? "#064e3b" : "#1f2937", 
+            borderRadius: "0.5rem",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "1rem"
+          }}>
+            <div>
+              {googleStatus?.connected ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981" }}>
+                    <span>✓</span>
+                    <strong>Google Account Connected</strong>
+                  </div>
+                  {googleStatus.email && (
+                    <small style={{ color: "#9ca3af" }}>{googleStatus.email}</small>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{ color: "#9ca3af" }}>No Google account connected</div>
+                  <small style={{ color: "#6b7280" }}>Connect to enable direct exports to your Drive</small>
+                </>
+              )}
+            </div>
+
+            {googleStatus?.connected ? (
+              <button
+                className="btn-secondary"
+                onClick={async () => {
+                  setIsConnectingGoogle(true);
+                  try {
+                    const res = await fetch("/api/google-oauth/disconnect", { method: "POST" });
+                    if (res.ok) {
+                      setGoogleStatus({ connected: false, email: null, can_export: false });
+                      setMessage({ type: "success", text: "Google account disconnected" });
+                    }
+                  } catch {
+                    setMessage({ type: "error", text: "Failed to disconnect" });
+                  } finally {
+                    setIsConnectingGoogle(false);
+                  }
+                }}
+                disabled={isConnectingGoogle}
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                onClick={async () => {
+                  setIsConnectingGoogle(true);
+                  try {
+                    const res = await fetch("/api/google-oauth/connect");
+                    const data = await res.json();
+                    if (data.authorization_url) {
+                      window.location.href = data.authorization_url;
+                    }
+                  } catch {
+                    setMessage({ type: "error", text: "Failed to initiate connection" });
+                    setIsConnectingGoogle(false);
+                  }
+                }}
+                disabled={isConnectingGoogle}
+              >
+                {isConnectingGoogle ? "Connecting..." : "Connect Google Account"}
+              </button>
+            )}
+          </div>
+        </section>
       </div>
+
+      {/* Team Settings Card */}
+      <div className="card" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+        <h1 style={{ margin: 0 }}>🏢 Team Settings</h1>
+
+        <div className="form-field">
+          <label htmlFor="team-select">Team</label>
+          <select
+            id="team-select"
+            value={selectedTeamId}
+            onChange={(e) => setSelectedTeamId(e.target.value)}
+          >
+            {teams.map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </select>
+        </div>
 
       <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
 
@@ -280,87 +366,6 @@ function SettingsContent() {
             placeholder="e.g., 1abc123..."
           />
           <small style={{ color: "#9ca3af" }}>Google Doc ID for the PSO template</small>
-        </div>
-      </section>
-
-      <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
-
-      <section>
-        <h2>Google Account Connection</h2>
-        <p style={{ color: "#e5e7eb", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
-          Connect your Google account to export scopes directly to your Google Drive.
-        </p>
-
-        <div style={{ 
-          padding: "1rem", 
-          background: googleStatus?.connected ? "#064e3b" : "#1f2937", 
-          borderRadius: "0.5rem",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "1rem"
-        }}>
-          <div>
-            {googleStatus?.connected ? (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#10b981" }}>
-                  <span>✓</span>
-                  <strong>Google Account Connected</strong>
-                </div>
-                {googleStatus.email && (
-                  <small style={{ color: "#9ca3af" }}>{googleStatus.email}</small>
-                )}
-              </>
-            ) : (
-              <>
-                <div style={{ color: "#9ca3af" }}>No Google account connected</div>
-                <small style={{ color: "#6b7280" }}>Connect to enable direct exports to your Drive</small>
-              </>
-            )}
-          </div>
-
-          {googleStatus?.connected ? (
-            <button
-              className="btn-secondary"
-              onClick={async () => {
-                setIsConnectingGoogle(true);
-                try {
-                  const res = await fetch("/api/google-oauth/disconnect", { method: "POST" });
-                  if (res.ok) {
-                    setGoogleStatus({ connected: false, email: null, can_export: false });
-                    setMessage({ type: "success", text: "Google account disconnected" });
-                  }
-                } catch {
-                  setMessage({ type: "error", text: "Failed to disconnect" });
-                } finally {
-                  setIsConnectingGoogle(false);
-                }
-              }}
-              disabled={isConnectingGoogle}
-            >
-              Disconnect
-            </button>
-          ) : (
-            <button
-              className="btn-primary"
-              onClick={async () => {
-                setIsConnectingGoogle(true);
-                try {
-                  const res = await fetch("/api/google-oauth/connect");
-                  const data = await res.json();
-                  if (data.authorization_url) {
-                    window.location.href = data.authorization_url;
-                  }
-                } catch {
-                  setMessage({ type: "error", text: "Failed to initiate connection" });
-                  setIsConnectingGoogle(false);
-                }
-              }}
-              disabled={isConnectingGoogle}
-            >
-              {isConnectingGoogle ? "Connecting..." : "Connect Google Account"}
-            </button>
-          )}
         </div>
       </section>
 
@@ -482,8 +487,9 @@ function SettingsContent() {
           onClick={handleSave}
           disabled={isSaving || !selectedTeamId}
         >
-          {isSaving ? "Saving..." : "Save Settings"}
+          {isSaving ? "Saving..." : "Save Team Settings"}
         </button>
+      </div>
       </div>
     </div>
   );

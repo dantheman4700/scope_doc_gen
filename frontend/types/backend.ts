@@ -94,3 +94,16 @@ export interface SearchResult {
   metadata: Record<string, unknown>;
 }
 
+export interface RunVersion {
+  id: string;
+  run_id: string;
+  version_number: number;
+  markdown?: string | null;
+  feedback?: RunFeedback | null;
+  questions_for_expert?: string[] | null;
+  questions_for_client?: string[] | null;
+  graphic_path?: string | null;
+  created_at: string;
+  regen_context?: string | null;
+}
+

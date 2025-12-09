@@ -34,6 +34,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+    google_tokens: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     projects: Mapped[List["Project"]] = relationship("Project", back_populates="owner")
     teams: Mapped[List["TeamMember"]] = relationship("TeamMember", back_populates="user")
@@ -148,6 +149,26 @@ class Run(Base):
         foreign_keys=[extracted_variables_artifact_id],
         post_update=True,
     )
+    versions: Mapped[List["RunVersion"]] = relationship("RunVersion", back_populates="run", cascade="all, delete-orphan")
+
+
+class RunVersion(Base):
+    """Stores versions of run outputs for in-place regeneration."""
+    __tablename__ = "run_versions"
+
+    id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    markdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    feedback: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    questions_for_expert: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    questions_for_client: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    graphic_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
+    # Store the context/answers that triggered this regeneration
+    regen_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    run: Mapped[Run] = relationship("Run", back_populates="versions")
 
 
 class RunStep(Base):

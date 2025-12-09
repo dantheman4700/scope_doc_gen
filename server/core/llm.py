@@ -1013,3 +1013,102 @@ INSTRUCTIONS:
 
         raise ValueError("No JSON object found in response")
 
+
+# =============================================================================
+# Standalone functions for API use
+# =============================================================================
+
+def generate_questions(scope_markdown: str) -> Dict[str, List[str]]:
+    """
+    Standalone function to generate questions from a scope markdown.
+    Used by the API endpoints.
+    """
+    extractor = ClaudeVariableExtractor()
+    return extractor.generate_questions(scope_markdown=scope_markdown)
+
+
+def regenerate_with_answers(
+    original_markdown: str,
+    answers: str,
+    extra_research: bool = False,
+    research_provider: str = "claude",
+) -> str:
+    """
+    Regenerate a scope document using the provided answers/context.
+    
+    Args:
+        original_markdown: The original scope markdown to improve
+        answers: Answers to questions or additional context
+        extra_research: Whether to perform additional web research
+        research_provider: "claude" or "perplexity" for research
+        
+    Returns:
+        Updated markdown with improvements based on the answers
+    """
+    from anthropic import Anthropic
+    from server.core.config import ANTHROPIC_API_KEY, CLAUDE_THINKING_BUDGET
+    
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    
+    logger.info(f"Regenerating scope with answers (extra_research={extra_research}, provider={research_provider})")
+    
+    system_prompt = """You are a senior solutions architect refining a technical scope document.
+
+Your task is to improve the existing scope document using the provided answers and context.
+Make the following types of improvements:
+1. Fill in any gaps or unknowns based on the answers
+2. Update technical details, timelines, or estimates if the answers provide new information
+3. Add clarifications where ambiguity existed
+4. Ensure consistency throughout the document
+
+IMPORTANT:
+- Keep the same overall structure and formatting as the original
+- Do not remove sections unless explicitly requested
+- Make targeted, precise improvements rather than rewriting everything
+- Preserve all markdown formatting
+
+Output ONLY the complete updated markdown document, no explanations."""
+
+    user_prompt = f"""## Original Scope Document
+
+{original_markdown}
+
+---
+
+## Answers and Additional Context
+
+{answers}
+
+---
+
+Please generate the improved version of the scope document, incorporating the answers and context above."""
+
+    # Determine if we should use web search
+    tools = None
+    if extra_research and research_provider == "claude":
+        tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+    
+    try:
+        response = client.messages.create(
+            model="claude-opus-4-5-20250514",
+            max_tokens=MAX_TOKENS,
+            temperature=1,  # Must be 1 when thinking is enabled
+            thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            tools=tools,
+        )
+        
+        # Extract the text from the response
+        for block in response.content:
+            if hasattr(block, 'text'):
+                result = block.text.strip()
+                logger.info(f"Regeneration complete, output length: {len(result)}")
+                return result
+        
+        raise ValueError("No text content in response")
+        
+    except Exception as exc:
+        logger.exception(f"Regeneration failed: {exc}")
+        raise
+

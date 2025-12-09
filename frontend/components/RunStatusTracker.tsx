@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
-import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary } from "@/types/backend";
+import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVersion } from "@/types/backend";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -37,6 +37,13 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [quickRegenText, setQuickRegenText] = useState<string>("");
   const [solutionGraphicUrl, setSolutionGraphicUrl] = useState<string | null>(null);
   const [isLoadingGraphic, setIsLoadingGraphic] = useState<boolean>(false);
+  // Version management
+  const [versions, setVersions] = useState<RunVersion[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const [isLoadingVersions, setIsLoadingVersions] = useState<boolean>(false);
+  const [regenGraphic, setRegenGraphic] = useState<boolean>(false);
+  const [extraResearch, setExtraResearch] = useState<boolean>(false);
+  const [researchProvider, setResearchProvider] = useState<"claude" | "perplexity">("claude");
   // Included files do not change after run creation, so load once and never re-render them on poll
   const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
   const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
@@ -286,6 +293,31 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
+  // Fetch versions when run is successful
+  useEffect(() => {
+    if (run.status.toLowerCase() !== "success") return;
+    
+    setIsLoadingVersions(true);
+    fetch(`/api/runs/${runId}/versions`)
+      .then((res) => {
+        if (res.ok) return res.json();
+        return [];
+      })
+      .then((data: RunVersion[]) => {
+        setVersions(data);
+        // If we have versions and none selected, select version 1 (original)
+        if (data.length > 0 && selectedVersion === null) {
+          setSelectedVersion(1);
+        }
+      })
+      .catch(() => {
+        // No versions yet, that's fine
+      })
+      .finally(() => {
+        setIsLoadingVersions(false);
+      });
+  }, [runId, run.status, selectedVersion]);
+
   const handleQuickRegenWithAnswers = async () => {
     // Combine all answers into a formatted string
     const expertQs = questions?.questions_for_expert || [];
@@ -321,20 +353,16 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     setIsSubmittingQuickRegen(true);
     setActionError(null);
     
-    const params = (run.params ?? {}) as Record<string, unknown>;
+    // Call the regenerate endpoint to create a new version
     const payload = {
-      parent_run_id: run.id,
-      run_mode: "fast",
-      research_mode: typeof params.research_mode === "string" ? params.research_mode : run.research_mode,
-      instructions: run.instructions ?? undefined,
-      enable_vector_store: typeof params.enable_vector_store === "boolean" ? params.enable_vector_store : false,
-      enable_web_search: typeof params.enable_web_search === "boolean" ? params.enable_web_search : true,
-      included_file_ids: run.included_file_ids ?? [],
-      what_to_change: combinedAnswers,
+      answers: combinedAnswers,
+      regen_graphic: regenGraphic,
+      extra_research: extraResearch,
+      research_provider: researchProvider,
     };
     
     try {
-      const response = await fetch(`/api/projects/${run.project_id}/runs`, {
+      const response = await fetch(`/api/runs/${runId}/regenerate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -345,8 +373,20 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         throw new Error(errorPayload.detail ?? errorPayload.message ?? `Request failed (${response.status})`);
       }
       
-      const newRun = (await response.json()) as RunSummary;
-      router.push(`/runs/${newRun.id}`);
+      const result = (await response.json()) as { version_id: string; version_number: number; message: string };
+      setActionMessage(`Created version ${result.version_number}`);
+      
+      // Refresh versions list
+      const versionsRes = await fetch(`/api/runs/${runId}/versions`);
+      if (versionsRes.ok) {
+        const newVersions = (await versionsRes.json()) as RunVersion[];
+        setVersions(newVersions);
+        setSelectedVersion(result.version_number);
+      }
+      
+      // Clear the answers
+      setExpertAnswers({});
+      setClientAnswers({});
     } catch (err) {
       const message = err instanceof Error ? err.message : "Quick regeneration failed";
       setActionError(message);
@@ -410,6 +450,32 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             <span>Started: {formatDate(run.started_at)}</span>
             <span>Finished: {formatDate(run.finished_at)}</span>
           </p>
+          {/* Version selector */}
+          {versions.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.5rem" }}>
+              <span style={{ color: "#9ca3af", fontSize: "0.875rem" }}>Version:</span>
+              <select
+                value={selectedVersion ?? 1}
+                onChange={(e) => setSelectedVersion(Number(e.target.value))}
+                style={{
+                  padding: "0.25rem 0.5rem",
+                  borderRadius: "0.375rem",
+                  border: "1px solid #374151",
+                  background: "#1f2937",
+                  color: "#e5e7eb",
+                  fontSize: "0.875rem",
+                }}
+              >
+                <option value={1}>v1 (Original)</option>
+                {versions.map((v) => (
+                  <option key={v.id} value={v.version_number}>
+                    v{v.version_number} ({formatDate(v.created_at)})
+                  </option>
+                ))}
+              </select>
+              {isLoadingVersions && <span style={{ color: "#6b7280", fontSize: "0.75rem" }}>Loading...</span>}
+            </div>
+          )}
           {run.parent_run_id ? (
             <p className="run-tracker__parent">
               Parent run:{" "}
@@ -624,7 +690,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_expert.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
+                <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
                 <input
                   type="text"
                   placeholder="Your answer..."
@@ -657,7 +723,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_client.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
+                <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
                 <input
                   type="text"
                   placeholder="Client's answer..."
@@ -686,8 +752,50 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <h2 style={{ margin: 0 }}>Regenerate with Answers</h2>
           <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-            Click below to regenerate the scope using the answers you provided above.
+            Create a new version of the scope using the answers you provided above.
           </p>
+          
+          {/* Regen options */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", padding: "0.75rem", background: "#1f2937", borderRadius: "0.375rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={regenGraphic}
+                onChange={(e) => setRegenGraphic(e.target.checked)}
+              />
+              <span style={{ color: "#e5e7eb" }}>Regenerate Solution Graphic</span>
+            </label>
+            
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={extraResearch}
+                onChange={(e) => setExtraResearch(e.target.checked)}
+              />
+              <span style={{ color: "#e5e7eb" }}>Extra Research</span>
+            </label>
+            
+            {extraResearch && (
+              <div style={{ marginLeft: "1.5rem" }}>
+                <select
+                  value={researchProvider}
+                  onChange={(e) => setResearchProvider(e.target.value as "claude" | "perplexity")}
+                  style={{
+                    padding: "0.375rem 0.75rem",
+                    borderRadius: "0.375rem",
+                    border: "1px solid #374151",
+                    background: "#111827",
+                    color: "#e5e7eb",
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  <option value="claude">Claude Web Search</option>
+                  <option value="perplexity">Perplexity Deep Research</option>
+                </select>
+              </div>
+            )}
+          </div>
+          
           {actionError && <p className="error-text">{actionError}</p>}
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button
@@ -696,7 +804,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               onClick={handleQuickRegenWithAnswers}
               disabled={isSubmittingQuickRegen}
             >
-              {isSubmittingQuickRegen ? "Starting…" : "Quick Regen with Answers"}
+              {isSubmittingQuickRegen ? "Regenerating…" : "Create New Version"}
             </button>
           </div>
         </section>
