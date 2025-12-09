@@ -1,0 +1,64 @@
+{
+  "sections": [
+    {"category": "UI/UX", "items": [
+      {"text": "Refresh/cache bugs", "completed": false},
+      {"text": "Revert SSR", "completed": false},
+      {"text": "Navigation improvements", "completed": false},
+      {"text": "Component alignment", "completed": false},
+      {"text": "Fluid UX", "completed": false}
+    ]},
+    {"category": "Image Generation", "items": [
+      {"text": "Auto-insert into DOCX/Google Docs", "completed": false},
+      {"text": "Standardized graphics", "completed": false},
+      {"text": "Brand matching", "completed": false}
+    ]},
+    {"category": "Google Docs Export", "items": [
+      {"text": "Integrate markgdoc for complex markdown", "completed": true},
+      {"text": "Inline editing of created Google Docs for quick regen", "completed": false},
+      {"text": "OAuth to allow all Google users (not just test users)", "completed": false}
+    ]},
+    {"category": "Auto-outreach", "items": [
+      {"text": "Slack integration for expert responses", "completed": false},
+      {"text": "Email for client questions", "completed": false}
+    ]},
+    {"category": "Document Ingestion", "items": [
+      {"text": "Fix token counting for complex files", "completed": false},
+      {"text": "Increase recommended limits", "completed": false},
+      {"text": "Multi-turn/Sonnet 4.5 1M mode", "completed": false}
+    ]},
+    {"category": "Admin", "items": [
+      {"text": "Team/org settings control panel", "completed": true},
+      {"text": "Improved settings", "completed": false},
+      {"text": "Improved permissions hierarchies", "completed": false}
+    ]},
+    {"category": "Account", "items": [
+      {"text": "Password reset option", "completed": false}
+    ]},
+    {"category": "API", "items": [
+      {"text": "Full API with keys for external integration", "completed": false}
+    ]},
+    {"category": "Vector Store", "items": [
+      {"text": "Validate full history pipeline", "completed": false},
+      {"text": "Embeddings viewer/editor", "completed": false},
+      {"text": "Easy past doc uploads", "completed": false}
+    ]},
+    {"category": "Questions", "items": [
+      {"text": "Improved visuals", "completed": false},
+      {"text": "Per-question response forms", "completed": false},
+      {"text": "Confidence scoring", "completed": false}
+    ]},
+    {"category": "Chatbot", "items": [
+      {"text": "Per-project chatbot experience", "completed": false},
+      {"text": "Per-team chatbot experience", "completed": false}
+    ]},
+    {"category": "Multi-Scope", "items": [
+      {"text": "Generate multiple scopes at once from the same inputs", "completed": false}
+    ]},
+    {"category": "PSO → Scope", "items": [
+      {"text": "Reference previous PSO as source for scope generation", "completed": false}
+    ]},
+    {"category": "Auto-detect", "items": [
+      {"text": "High-confidence solutions with quick-start buttons for scoping", "completed": false}
+    ]}
+  ]
+}

@@ -25,6 +25,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
   const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
   const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
+  const [existingGoogleDocUrl, setExistingGoogleDocUrl] = useState<string | null>(null);
   const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState<boolean>(false);
   const [isViewingMarkdown, setIsViewingMarkdown] = useState<boolean>(false);
@@ -35,6 +36,15 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [clientAnswers, setClientAnswers] = useState<Record<number, string>>({});
   const [isSubmittingQuickRegen, setIsSubmittingQuickRegen] = useState<boolean>(false);
   const [quickRegenText, setQuickRegenText] = useState<string>("");
+  const [regenJobId, setRegenJobId] = useState<string | null>(null);
+  const [regenJobStatus, setRegenJobStatus] = useState<string | null>(null);
+  const [completedRegens, setCompletedRegens] = useState<Array<{
+    id: string;
+    status: string;
+    versionNumber?: number;
+    finishedAt: string;
+    error?: string;
+  }>>([]);
   const [solutionGraphicUrl, setSolutionGraphicUrl] = useState<string | null>(null);
   const [isLoadingGraphic, setIsLoadingGraphic] = useState<boolean>(false);
   // Version management
@@ -182,34 +192,44 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
-  const handleExportGoogleDoc = async () => {
+  const handleExportGoogleDoc = async (forceNew: boolean = false) => {
     setActionError(null);
     setActionMessage(null);
     setIsExportingGdoc(true);
-      try {
-      const response = await fetch(`/api/runs/${runId}/export-google-doc`, { method: "POST" });
+    try {
+      const url = forceNew 
+        ? `/api/runs/${runId}/export-google-doc?force=true`
+        : `/api/runs/${runId}/export-google-doc`;
+      const response = await fetch(url, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as {
         doc_url?: string;
         doc_id?: string;
         status?: string;
         detail?: string;
       };
-        if (!response.ok) {
+      if (!response.ok) {
         const detail = payload.detail ?? `Export failed (${response.status})`;
         throw new Error(detail);
-        }
+      }
       const docUrl = payload.doc_url;
       if (docUrl) {
+        setExistingGoogleDocUrl(docUrl);
         window.open(docUrl, "_blank", "noopener,noreferrer");
-        setActionMessage("Opened Google Doc");
+        setActionMessage(payload.status === "existing" ? "Opened Google Doc" : "Created new Google Doc");
       } else {
         setActionMessage("Google Doc created");
-        }
-      } catch (err) {
+      }
+    } catch (err) {
       const message = err instanceof Error ? err.message : "Export to Google Docs failed";
       setActionError(message);
-      } finally {
+    } finally {
       setIsExportingGdoc(false);
+    }
+  };
+
+  const handleOpenExistingGoogleDoc = () => {
+    if (existingGoogleDocUrl) {
+      window.open(existingGoogleDocUrl, "_blank", "noopener,noreferrer");
     }
   };
 
@@ -352,8 +372,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     
     setIsSubmittingQuickRegen(true);
     setActionError(null);
+    setRegenJobStatus("starting");
     
-    // Call the regenerate endpoint to create a new version
+    // Call the regenerate endpoint to start a background job
     const payload = {
       answers: combinedAnswers,
       regen_graphic: regenGraphic,
@@ -373,24 +394,95 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         throw new Error(errorPayload.detail ?? errorPayload.message ?? `Request failed (${response.status})`);
       }
       
-      const result = (await response.json()) as { version_id: string; version_number: number; message: string };
-      setActionMessage(`Created version ${result.version_number}`);
+      const result = (await response.json()) as { job_id: string; message: string };
+      setRegenJobId(result.job_id);
+      setRegenJobStatus("running");
       
-      // Refresh versions list
-      const versionsRes = await fetch(`/api/runs/${runId}/versions`);
-      if (versionsRes.ok) {
-        const newVersions = (await versionsRes.json()) as RunVersion[];
-        setVersions(newVersions);
-        setSelectedVersion(result.version_number);
-      }
+      // Poll for completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/runs/${runId}/regen-status/${result.job_id}`);
+          if (!statusRes.ok) {
+            clearInterval(pollInterval);
+            setRegenJobStatus(null);
+            setIsSubmittingQuickRegen(false);
+            setActionError("Failed to get regen status");
+            return;
+          }
+          
+          const status = (await statusRes.json()) as {
+            status: string;
+            version_id?: string;
+            version_number?: number;
+            error?: string;
+          };
+          
+          setRegenJobStatus(status.status);
+          
+          if (status.status === "success") {
+            clearInterval(pollInterval);
+            setActionMessage(`Created version ${status.version_number}`);
+            
+            // Record completed regen for display in Steps table
+            setCompletedRegens((prev) => [...prev, {
+              id: result.job_id,
+              status: "success",
+              versionNumber: status.version_number,
+              finishedAt: new Date().toISOString(),
+            }]);
+            
+            setRegenJobId(null);
+            setRegenJobStatus(null);
+            setIsSubmittingQuickRegen(false);
+            
+            // Refresh versions list
+            const versionsRes = await fetch(`/api/runs/${runId}/versions`);
+            if (versionsRes.ok) {
+              const newVersions = (await versionsRes.json()) as RunVersion[];
+              setVersions(newVersions);
+              if (status.version_number) {
+                setSelectedVersion(status.version_number);
+              }
+            }
+            
+            // Clear the answers
+            setExpertAnswers({});
+            setClientAnswers({});
+          } else if (status.status === "failed") {
+            clearInterval(pollInterval);
+            
+            // Record failed regen for display in Steps table
+            setCompletedRegens((prev) => [...prev, {
+              id: result.job_id,
+              status: "failed",
+              finishedAt: new Date().toISOString(),
+              error: status.error,
+            }]);
+            
+            setRegenJobId(null);
+            setRegenJobStatus(null);
+            setIsSubmittingQuickRegen(false);
+            setActionError(status.error || "Regeneration failed");
+          }
+        } catch {
+          // Keep polling on transient errors
+        }
+      }, 2000);
       
-      // Clear the answers
-      setExpertAnswers({});
-      setClientAnswers({});
+      // Safety timeout after 10 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (regenJobStatus === "running") {
+          setRegenJobStatus(null);
+          setIsSubmittingQuickRegen(false);
+          setActionError("Regeneration timed out");
+        }
+      }, 600000);
+      
     } catch (err) {
       const message = err instanceof Error ? err.message : "Quick regeneration failed";
       setActionError(message);
-    } finally {
+      setRegenJobStatus(null);
       setIsSubmittingQuickRegen(false);
     }
   };
@@ -485,61 +577,94 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </p>
           ) : null}
         </div>
-        <div className="run-tracker__actions">
-          {error ? <p className="error-text">{error}</p> : null}
-          {actionError ? <p className="error-text">{actionError}</p> : null}
-          {actionMessage ? <p className="success-text">{actionMessage}</p> : null}
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={handleViewMarkdown}
-            disabled={!canExport || isLoadingMarkdown}
+        <div className="run-tracker__actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+          {error ? <p className="error-text" style={{ width: "100%" }}>{error}</p> : null}
+          {actionError ? <p className="error-text" style={{ width: "100%" }}>{actionError}</p> : null}
+          {actionMessage ? <p className="success-text" style={{ width: "100%" }}>{actionMessage}</p> : null}
+          
+          {/* Download Dropdown */}
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <select
+              className="btn-secondary"
+              style={{ padding: "0.5rem 1rem", cursor: "pointer", appearance: "none", paddingRight: "2rem" }}
+              disabled={!canExport}
+              onChange={(e) => {
+                const value = e.target.value;
+                e.target.value = ""; // Reset to placeholder
+                if (value === "view") handleViewMarkdown();
+                else if (value === "md") handleDownload("md");
+                else if (value === "docx") handleDownload("docx");
+              }}
+              defaultValue=""
+            >
+              <option value="" disabled>📥 Download...</option>
+              <option value="view">View Markdown</option>
+              <option value="md">Download Markdown</option>
+              <option value="docx">Download DOCX</option>
+            </select>
+          </div>
+
+          {/* Google Docs Export - Primary Action */}
+          {existingGoogleDocUrl ? (
+            <div style={{ display: "flex", gap: "0.25rem" }}>
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={handleOpenExistingGoogleDoc}
+                disabled={!canExport}
+              >
+                📄 Open Google Doc
+              </button>
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => handleExportGoogleDoc(true)}
+                disabled={!canExport || isExportingGdoc}
+                title="Create a new Google Doc"
+                style={{ padding: "0.5rem" }}
+              >
+                {isExportingGdoc ? "⏳" : "🔄"}
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={() => handleExportGoogleDoc(false)}
+              disabled={!canExport || isExportingGdoc}
+            >
+              {isExportingGdoc ? "Exporting…" : "📄 Export to Google Docs"}
+            </button>
+          )}
+
+          {/* More Actions Dropdown */}
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <select
+              className="btn-secondary"
+              style={{ padding: "0.5rem 1rem", cursor: "pointer", appearance: "none", paddingRight: "2rem" }}
+              disabled={!canExport}
+              onChange={(e) => {
+                const value = e.target.value;
+                e.target.value = ""; // Reset
+                if (value === "vector") handleEmbed();
+              }}
+              defaultValue=""
+            >
+              <option value="" disabled>⚙️ More...</option>
+              <option value="vector" disabled={isEmbedding}>{isEmbedding ? "Saving…" : "Save to Vector Store"}</option>
+            </select>
+          </div>
+
+          {/* Refresh Button */}
+          <button 
+            className="btn-secondary" 
+            type="button" 
+            onClick={() => setIsPolling(true)} 
+            disabled={isPolling}
+            title="Refresh run status"
+            style={{ padding: "0.5rem 0.75rem" }}
           >
-            {isLoadingMarkdown ? "Loading…" : "View Markdown"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={() => handleDownload("md")}
-            disabled={!canExport || isDownloadingMd}
-          >
-            {isDownloadingMd ? "Preparing…" : "Download Markdown"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={() => handleDownload("docx")}
-            disabled={!canExport || isDownloadingDocx}
-          >
-            {isDownloadingDocx ? "Preparing…" : "Download DOCX"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={handleExportGoogleDoc}
-            disabled={!canExport || isExportingGdoc}
-          >
-            {isExportingGdoc ? "Exporting…" : "Export to Google Docs"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={handleEmbed}
-            disabled={!canExport || isEmbedding}
-            title="Add this scope to the historical database for future reference"
-          >
-            {isEmbedding ? "Saving…" : "Save to Vector Store"}
-          </button>
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={() => setShowQuickRegen(true)}
-            disabled={!canExport}
-          >
-            Quick Regen
-          </button>
-          <button className="btn-secondary" type="button" onClick={() => setIsPolling(true)} disabled={isPolling}>
-            {isPolling ? "Polling…" : "Refresh"}
+            {isPolling ? "⏳" : "🔄"}
           </button>
         </div>
       </section>
@@ -691,11 +816,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             {questions.questions_for_expert.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                 <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
-                <input
-                  type="text"
+                <textarea
                   placeholder="Your answer..."
                   value={expertAnswers[idx] || ""}
                   onChange={(e) => setExpertAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
+                  rows={2}
                   style={{
                     width: "100%",
                     padding: "0.5rem 0.75rem",
@@ -704,6 +829,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                     background: "#1f2937",
                     color: "#e5e7eb",
                     fontSize: "0.875rem",
+                    resize: "vertical",
+                    minHeight: "2.5rem",
+                    fontFamily: "inherit",
                   }}
                 />
               </div>
@@ -724,11 +852,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             {questions.questions_for_client.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                 <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
-                <input
-                  type="text"
+                <textarea
                   placeholder="Client's answer..."
                   value={clientAnswers[idx] || ""}
                   onChange={(e) => setClientAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
+                  rows={2}
                   style={{
                     width: "100%",
                     padding: "0.5rem 0.75rem",
@@ -737,6 +865,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                     background: "#1f2937",
                     color: "#e5e7eb",
                     fontSize: "0.875rem",
+                    resize: "vertical",
+                    minHeight: "2.5rem",
+                    fontFamily: "inherit",
                   }}
                 />
               </div>
@@ -804,8 +935,17 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               onClick={handleQuickRegenWithAnswers}
               disabled={isSubmittingQuickRegen}
             >
-              {isSubmittingQuickRegen ? "Regenerating…" : "Create New Version"}
+              {isSubmittingQuickRegen 
+                ? regenJobStatus === "running" 
+                  ? "🔄 Regenerating (this may take a few minutes)…" 
+                  : "Starting…"
+                : "Create New Version"}
             </button>
+            {regenJobStatus && (
+              <span style={{ color: "#60a5fa", fontSize: "0.875rem" }}>
+                Status: {regenJobStatus}
+              </span>
+            )}
           </div>
         </section>
       )}
@@ -841,19 +981,55 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </tr>
           </thead>
           <tbody>
-            {steps.length === 0 ? (
+            {steps.length === 0 && !regenJobId ? (
               <tr>
                 <td colSpan={4}>Step data unavailable.</td>
               </tr>
             ) : (
-              steps.map((step) => (
-                <tr key={step.id}>
-                  <td>{step.name}</td>
-                  <td>{step.status}</td>
-                  <td>{formatDate(step.started_at)}</td>
-                  <td>{formatDate(step.finished_at)}</td>
-                </tr>
-              ))
+              <>
+                {steps.map((step) => (
+                  <tr key={step.id}>
+                    <td>{step.name}</td>
+                    <td>{step.status}</td>
+                    <td>{formatDate(step.started_at)}</td>
+                    <td>{formatDate(step.finished_at)}</td>
+                  </tr>
+                ))}
+                {/* Completed regen jobs */}
+                {completedRegens.map((regen, idx) => (
+                  <tr key={`regen-${regen.id}`} style={{ background: regen.status === "success" ? "#064e3b" : "#7f1d1d" }}>
+                    <td>
+                      {regen.status === "success" ? "✅" : "❌"} Regenerated Version {regen.versionNumber || "?"}
+                    </td>
+                    <td>
+                      <span style={{ color: regen.status === "success" ? "#10b981" : "#ef4444" }}>
+                        {regen.status}
+                      </span>
+                    </td>
+                    <td>—</td>
+                    <td>{formatDate(regen.finishedAt)}</td>
+                  </tr>
+                ))}
+                {/* Active regen job */}
+                {regenJobId && (
+                  <tr style={{ background: "#1e3a5f" }}>
+                    <td>🔄 Regenerating Version</td>
+                    <td>
+                      <span style={{ 
+                        display: "inline-flex", 
+                        alignItems: "center", 
+                        gap: "0.5rem",
+                        color: regenJobStatus === "success" ? "#10b981" : regenJobStatus === "failed" ? "#ef4444" : "#60a5fa"
+                      }}>
+                        {regenJobStatus === "running" && "⏳ "}
+                        {regenJobStatus || "pending"}
+                      </span>
+                    </td>
+                    <td>{formatDate(new Date().toISOString())}</td>
+                    <td>—</td>
+                  </tr>
+                )}
+              </>
             )}
           </tbody>
         </table>

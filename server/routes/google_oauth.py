@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from server.db import models
 from ..dependencies import db_session
@@ -77,12 +78,14 @@ async def get_google_connection_status(
     db: Session = Depends(db_session),
 ):
     """Check if the current user has a connected Google account."""
-    # Refresh user from database to get latest google_tokens
+    # user is a SessionUser pydantic model, fetch the actual DB model
     user_record = db.get(models.User, user.id)
     if not user_record:
+        logger.warning(f"User {user.id} not found when checking Google status")
         return GoogleConnectionStatus(connected=False, can_export=False)
     
     google_tokens = user_record.google_tokens or {}
+    logger.info(f"Checking Google status for user {user.id}: tokens present={bool(google_tokens)}, has_refresh={bool(google_tokens.get('refresh_token'))}")
     
     connected = is_token_valid(google_tokens)
     
@@ -147,9 +150,14 @@ async def google_oauth_callback(
         tokens = exchange_code_for_tokens(code)
         
         # Store tokens directly on the user record
+        # Use flag_modified to ensure SQLAlchemy tracks the JSONB change
         user.google_tokens = tokens
+        flag_modified(user, "google_tokens")
+        db.add(user)  # Ensure the user is in the session
         db.commit()
-        logger.info(f"Google tokens stored for user {user.id}")
+        db.refresh(user)  # Refresh to confirm the change was persisted
+        
+        logger.info(f"Google tokens stored for user {user.id}, email: {tokens.get('email')}, has_refresh: {bool(tokens.get('refresh_token'))}")
         
         return RedirectResponse(url="/settings?google_connected=true")
         

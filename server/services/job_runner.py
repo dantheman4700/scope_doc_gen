@@ -116,11 +116,39 @@ class JobStatus:
         }
 
 
+@dataclass
+class RegenJobStatus:
+    """Status for a regeneration job."""
+    id: UUID
+    run_id: UUID
+    status: str = JobState.PENDING
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    version_id: Optional[UUID] = None
+    version_number: Optional[int] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": str(self.id),
+            "run_id": str(self.run_id),
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "version_id": str(self.version_id) if self.version_id else None,
+            "version_number": self.version_number,
+            "error": self.error,
+        }
+
+
 class JobRegistry:
     """In-memory job tracker backed by a thread pool executor."""
 
     def __init__(self, max_workers: int = 2, *, vector_store: Optional[VectorStore] = None) -> None:
         self._jobs: Dict[UUID, JobStatus] = {}
+        self._regen_jobs: Dict[UUID, RegenJobStatus] = {}
         self._lock = Lock()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._vector_store = vector_store
@@ -200,6 +228,187 @@ class JobRegistry:
     def get_job(self, job_id: UUID) -> Optional[JobStatus]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    # ---------- Regen Job Methods ----------
+
+    def create_regen_job(
+        self,
+        run_id: UUID,
+        answers: str,
+        extra_research: bool = False,
+        research_provider: str = "claude",
+        regen_graphic: bool = False,
+    ) -> RegenJobStatus:
+        """Create and start a regeneration job."""
+        job_id = uuid4()
+        job = RegenJobStatus(id=job_id, run_id=run_id)
+        
+        with self._lock:
+            self._regen_jobs[job_id] = job
+        
+        # Submit the regen task
+        self._executor.submit(
+            self._execute_regen_job,
+            job_id,
+            run_id,
+            answers,
+            extra_research,
+            research_provider,
+            regen_graphic,
+        )
+        
+        return job
+
+    def get_regen_job(self, job_id: UUID) -> Optional[RegenJobStatus]:
+        """Get regen job status."""
+        with self._lock:
+            return self._regen_jobs.get(job_id)
+
+    def _execute_regen_job(
+        self,
+        job_id: UUID,
+        run_id: UUID,
+        answers: str,
+        extra_research: bool,
+        research_provider: str,
+        regen_graphic: bool,
+    ) -> None:
+        """Execute regeneration in background thread."""
+        with self._lock:
+            job = self._regen_jobs.get(job_id)
+            if job:
+                job.status = JobState.RUNNING
+                job.started_at = datetime.utcnow()
+        
+        try:
+            with get_session() as session:
+                run = session.get(models.Run, run_id)
+                if not run:
+                    raise ValueError(f"Run {run_id} not found")
+                
+                # Get current version number
+                latest_version = (
+                    session.query(models.RunVersion)
+                    .filter(models.RunVersion.run_id == run_id)
+                    .order_by(models.RunVersion.version_number.desc())
+                    .first()
+                )
+                next_version_number = (latest_version.version_number + 1) if latest_version else 2
+                
+                # Get original markdown from latest version or artifact
+                original_markdown = None
+                if latest_version and latest_version.markdown:
+                    original_markdown = latest_version.markdown
+                else:
+                    artifact = (
+                        session.query(models.Artifact)
+                        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+                        .first()
+                    )
+                    if artifact:
+                        # Read from storage
+                        local_path = Path(DATA_ROOT) / "projects" / str(run.project_id) / "output" / Path(artifact.path).name
+                        if local_path.exists():
+                            original_markdown = local_path.read_text(encoding="utf-8")
+                
+                if not original_markdown:
+                    raise ValueError("No original markdown found")
+                
+                project_id_str = str(run.project_id)
+                
+                # Import LLM functions
+                from server.core.llm import regenerate_with_answers, generate_questions
+                
+                LOGGER.info(f"Starting regen job {job_id} for run {run_id}")
+                
+                # Regenerate markdown
+                new_markdown = regenerate_with_answers(
+                    original_markdown,
+                    answers,
+                    extra_research,
+                    research_provider,
+                )
+                
+                # Generate questions
+                try:
+                    questions = generate_questions(new_markdown)
+                except Exception as exc:
+                    LOGGER.warning(f"Failed to generate questions for version: {exc}")
+                    questions = {"questions_for_expert": [], "questions_for_client": []}
+                
+                # Handle graphic regeneration
+                graphic_path = None
+                if regen_graphic:
+                    try:
+                        from server.core.image_gen import generate_scope_image, GENAI_AVAILABLE
+                        from server.core.config import GEMINI_IMAGE_RESOLUTION, GEMINI_IMAGE_ASPECT_RATIO
+                        
+                        if GENAI_AVAILABLE:
+                            proposed_solution = ""
+                            lines = new_markdown.split("\n")
+                            in_solution = False
+                            for line in lines:
+                                if "## Proposed Solution" in line or "## Solution" in line:
+                                    in_solution = True
+                                    continue
+                                if in_solution and line.startswith("## "):
+                                    break
+                                if in_solution:
+                                    proposed_solution += line + "\n"
+                            
+                            if proposed_solution:
+                                image_data = generate_scope_image(
+                                    proposed_solution[:2000],
+                                    GEMINI_IMAGE_RESOLUTION,
+                                    GEMINI_IMAGE_ASPECT_RATIO,
+                                )
+                                
+                                if image_data:
+                                    version_graphic_filename = f"version_{next_version_number}_graphic.png"
+                                    version_graphic_path = Path(DATA_ROOT) / "projects" / project_id_str / "output" / version_graphic_filename
+                                    version_graphic_path.parent.mkdir(parents=True, exist_ok=True)
+                                    version_graphic_path.write_bytes(image_data)
+                                    graphic_path = str(version_graphic_path)
+                    except Exception as exc:
+                        LOGGER.warning(f"Failed to regenerate graphic: {exc}")
+                
+                # Create version record
+                new_version = models.RunVersion(
+                    run_id=run_id,
+                    version_number=next_version_number,
+                    markdown=new_markdown,
+                    feedback=None,
+                    questions_for_expert=questions.get("questions_for_expert", []),
+                    questions_for_client=questions.get("questions_for_client", []),
+                    graphic_path=graphic_path,
+                    regen_context=answers,
+                )
+                
+                session.add(new_version)
+                session.commit()
+                session.refresh(new_version)
+                
+                LOGGER.info(f"Created version {next_version_number} for run {run_id}")
+                
+                # Update job status
+                with self._lock:
+                    job = self._regen_jobs.get(job_id)
+                    if job:
+                        job.status = JobState.SUCCESS
+                        job.finished_at = datetime.utcnow()
+                        job.version_id = new_version.id
+                        job.version_number = next_version_number
+                
+        except Exception as exc:
+            LOGGER.exception(f"Regen job {job_id} failed: {exc}")
+            with self._lock:
+                job = self._regen_jobs.get(job_id)
+                if job:
+                    job.status = JobState.FAILED
+                    job.finished_at = datetime.utcnow()
+                    job.error = str(exc)
+
+    # ---------- End Regen Job Methods ----------
 
     def _ensure_run_record(self, job: JobStatus, options: RunOptions, template_type: Optional[str] = None) -> None:
         with get_session() as session:

@@ -13,8 +13,15 @@ interface ExportResponse {
   detail?: string;
 }
 
-export async function POST(_request: Request, { params }: RouteParams) {
-  const response = await apiFetchJson<ExportResponse>(`/runs/${params.runId}/export-google-doc`, {
+export async function POST(request: Request, { params }: RouteParams) {
+  // Pass through query parameters (like ?force=true)
+  const url = new URL(request.url);
+  const force = url.searchParams.get("force");
+  const backendUrl = force === "true" 
+    ? `/runs/${params.runId}/export-google-doc?force=true`
+    : `/runs/${params.runId}/export-google-doc`;
+  
+  const response = await apiFetchJson<ExportResponse>(backendUrl, {
     method: "POST",
     throwIfUnauthorized: false
   });

@@ -12,6 +12,7 @@ from server.core.config import (
     CORS_ALLOW_ORIGINS,
     DATABASE_DSN,
     HISTORY_EMBEDDING_MODEL,
+    HISTORY_ENABLED,
     VECTOR_STORE_DSN,
 )
 from server.core.history_profiles import EMBED_DIMENSIONS
@@ -132,4 +133,12 @@ async def healthcheck() -> Dict[str, str]:
     """Simple healthcheck endpoint for orchestration probes."""
 
     return {"status": "ok"}
+
+
+@app.get("/config", tags=["system"])
+async def get_config() -> Dict[str, bool]:
+    """Get system configuration for frontend."""
+    return {
+        "history_enabled": HISTORY_ENABLED,
+    }
 

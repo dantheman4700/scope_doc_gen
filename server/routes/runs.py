@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
@@ -637,6 +637,7 @@ async def get_solution_graphic(
 @run_router.post("/{run_id}/export-google-doc")
 async def export_run_google_doc(
     run_id: UUID,
+    force: bool = Query(False, description="Force creation of new doc even if one exists"),
     current_user: SessionUser = Depends(get_current_user),
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
@@ -708,10 +709,10 @@ async def export_run_google_doc(
     if artifact is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
 
-    # If we've already created a Google Doc for this artifact, return it
+    # If we've already created a Google Doc for this artifact, return it (unless force=True)
     existing_url = (artifact.meta or {}).get("google_doc_url")
     existing_id = (artifact.meta or {}).get("google_doc_id")
-    if existing_url and existing_id:
+    if existing_url and existing_id and not force:
         return {"doc_id": existing_id, "doc_url": existing_url, "status": "existing"}
 
     project_id_str = str(run.project_id)
@@ -861,20 +862,38 @@ async def get_run_version(
     return version
 
 
-@run_router.post("/{run_id}/regenerate", response_model=RegenerateResponse)
+class RegenJobResponse(BaseModel):
+    """Response when starting a regen job."""
+    job_id: UUID
+    message: str
+
+
+class RegenJobStatusResponse(BaseModel):
+    """Response for regen job status check."""
+    id: str
+    run_id: str
+    status: str
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    version_id: Optional[str] = None
+    version_number: Optional[int] = None
+    error: Optional[str] = None
+
+
+@run_router.post("/{run_id}/regenerate", response_model=RegenJobResponse)
 async def regenerate_run(
     run_id: UUID,
     request: Request,
     payload: RegenerateRequest,
     db: Session = Depends(db_session),
     current_user: SessionUser = Depends(get_current_user),
-    storage: StorageBackend = Depends(get_storage),
 ):
     """
-    Regenerate a run's output, creating a new version.
+    Start a regeneration job for a run.
     
-    This takes the existing run's inputs + the provided answers and creates
-    an improved version of the scope document without creating a new run.
+    This creates a background job to regenerate the scope document with the
+    provided answers. Use GET /runs/{run_id}/regen-status/{job_id} to check status.
     """
     run = db.get(models.Run, run_id)
     if run is None:
@@ -886,126 +905,45 @@ async def regenerate_run(
             detail="Can only regenerate successful runs"
         )
     
-    # Get the current latest version number
-    latest_version = (
-        db.query(models.RunVersion)
-        .filter(models.RunVersion.run_id == run_id)
-        .order_by(models.RunVersion.version_number.desc())
-        .first()
-    )
-    
-    next_version_number = (latest_version.version_number + 1) if latest_version else 2
-    
-    # Get the original markdown from the artifact
-    artifact = (
-        db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-        .first()
-    )
-    
-    if artifact is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Original rendered document not found"
-        )
-    
-    project_id_str = str(run.project_id)
-    
-    try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
-        original_markdown = local_path.read_text(encoding="utf-8")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read original document: {exc}"
-        )
-    
-    # Import the LLM functions here to avoid circular imports
-    from server.core.llm import regenerate_with_answers, generate_questions
-    
-    # Regenerate the markdown with the provided answers
-    try:
-        new_markdown = await run_in_threadpool(
-            regenerate_with_answers,
-            original_markdown,
-            payload.answers,
-            payload.extra_research,
-            payload.research_provider,
-        )
-    except Exception as exc:
-        logger.exception("Failed to regenerate markdown")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Regeneration failed: {exc}"
-        )
-    
-    # Generate new questions for this version
-    try:
-        questions = await run_in_threadpool(generate_questions, new_markdown)
-    except Exception as exc:
-        logger.warning(f"Failed to generate questions for new version: {exc}")
-        questions = {"questions_for_expert": [], "questions_for_client": []}
-    
-    # Handle graphic regeneration if requested
-    graphic_path = None
-    if payload.regen_graphic:
-        try:
-            from server.core.image_gen import generate_scope_image, GENAI_AVAILABLE
-            from server.core.config import GEMINI_IMAGE_RESOLUTION, GEMINI_IMAGE_ASPECT_RATIO
-            
-            if GENAI_AVAILABLE:
-                # Extract proposed solution section for image prompt
-                proposed_solution = ""
-                lines = new_markdown.split("\n")
-                in_solution = False
-                for line in lines:
-                    if "## Proposed Solution" in line or "## Solution" in line:
-                        in_solution = True
-                        continue
-                    if in_solution and line.startswith("## "):
-                        break
-                    if in_solution:
-                        proposed_solution += line + "\n"
-                
-                if proposed_solution:
-                    image_data = await run_in_threadpool(
-                        generate_scope_image,
-                        proposed_solution[:2000],
-                        GEMINI_IMAGE_RESOLUTION,
-                        GEMINI_IMAGE_ASPECT_RATIO,
-                    )
-                    
-                    if image_data:
-                        # Save the image
-                        version_graphic_filename = f"version_{next_version_number}_graphic.png"
-                        version_graphic_path = Path(DATA_ROOT) / "projects" / project_id_str / "output" / version_graphic_filename
-                        version_graphic_path.parent.mkdir(parents=True, exist_ok=True)
-                        version_graphic_path.write_bytes(image_data)
-                        graphic_path = str(version_graphic_path)
-        except Exception as exc:
-            logger.warning(f"Failed to regenerate graphic: {exc}")
-    
-    # Create the new version record
-    new_version = models.RunVersion(
+    # Get job registry and start the regen job
+    registry = _registry(request)
+    job = registry.create_regen_job(
         run_id=run_id,
-        version_number=next_version_number,
-        markdown=new_markdown,
-        feedback=None,  # Could add feedback generation here
-        questions_for_expert=questions.get("questions_for_expert", []),
-        questions_for_client=questions.get("questions_for_client", []),
-        graphic_path=graphic_path,
-        regen_context=payload.answers,
+        answers=payload.answers,
+        extra_research=payload.extra_research,
+        research_provider=payload.research_provider,
+        regen_graphic=payload.regen_graphic,
     )
     
-    db.add(new_version)
-    db.commit()
-    db.refresh(new_version)
+    logger.info(f"Started regen job {job.id} for run {run_id}")
     
-    logger.info(f"Created version {next_version_number} for run {run_id}")
-    
-    return RegenerateResponse(
-        version_id=new_version.id,
-        version_number=next_version_number,
-        message=f"Successfully created version {next_version_number}"
+    return RegenJobResponse(
+        job_id=job.id,
+        message="Regeneration started. Poll /regen-status/{job_id} for progress."
     )
+
+
+@run_router.get("/{run_id}/regen-status/{job_id}", response_model=RegenJobStatusResponse)
+async def get_regen_job_status(
+    run_id: UUID,
+    job_id: UUID,
+    request: Request,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+):
+    """Get the status of a regeneration job."""
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    registry = _registry(request)
+    job = registry.get_regen_job(job_id)
+    
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Regen job not found")
+    
+    if job.run_id != run_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job does not belong to this run")
+    
+    return RegenJobStatusResponse(**job.to_dict())
 

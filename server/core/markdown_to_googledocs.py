@@ -17,11 +17,12 @@ except ImportError:  # pragma: no cover - optional dependency
 
 # Try to import markgdoc for better markdown conversion
 try:
-    import markgdoc
+    from markgdoc.markgdoc import process_markdown_content
     MARKGDOC_AVAILABLE = True
     logger.info("markgdoc available for enhanced markdown conversion")
 except ImportError:
     MARKGDOC_AVAILABLE = False
+    process_markdown_content = None
     logger.warning("markgdoc not available, using legacy markdown conversion")
 
 
@@ -77,15 +78,9 @@ def _create_with_markgdoc(
         raise RuntimeError("Failed to create Google Doc via Drive API")
 
     try:
-        # Use markgdoc to convert markdown to Google Docs requests
-        # markgdoc.markdown_to_requests returns a list of batch update requests
-        requests = markgdoc.markdown_to_requests(content)
-        
-        if requests:
-            docs_service.documents().batchUpdate(
-                documentId=document_id,
-                body={"requests": requests},
-            ).execute()
+        # Use markgdoc's process_markdown_content which handles the conversion
+        # It takes the docs_service, document_id, and markdown content
+        process_markdown_content(docs_service, document_id, content, debug=False)
         
         logger.info(f"Created Google Doc {document_id} using markgdoc")
         return document_id

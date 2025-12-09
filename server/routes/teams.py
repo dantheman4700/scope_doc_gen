@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..db import models
 from ..dependencies import db_session
@@ -170,8 +171,72 @@ async def update_team_settings(
     team = _get_team_for_user(db, team_id, current_user.id)
     merged = {**(team.settings or {}), **payload.model_dump(exclude_unset=True)}
     team.settings = merged
+    flag_modified(team, "settings")
     db.add(team)
     db.commit()
     db.refresh(team)
     settings = TeamSettings(**team.settings)
     return TeamSettingsResponse(team_id=team.id, **settings.model_dump())
+
+
+# ---- Roadmap (stored in team settings) ----
+
+class RoadmapItem(BaseModel):
+    """Single roadmap item."""
+    text: str
+    completed: bool = False
+
+
+class RoadmapSection(BaseModel):
+    """Roadmap category with items."""
+    category: str
+    items: List[RoadmapItem]
+
+
+class RoadmapConfig(BaseModel):
+    """Full roadmap configuration."""
+    sections: List[RoadmapSection] = []
+
+
+@router.get("/{team_id}/roadmap", response_model=RoadmapConfig)
+async def get_team_roadmap(
+    team_id: UUID,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+) -> RoadmapConfig:
+    """Get the team's roadmap configuration."""
+    team = _get_team_for_user(db, team_id, current_user.id)
+    settings = team.settings or {}
+    roadmap_data = settings.get("roadmap", {})
+    return RoadmapConfig(**roadmap_data) if roadmap_data else RoadmapConfig(sections=[])
+
+
+@router.put("/{team_id}/roadmap", response_model=RoadmapConfig)
+async def update_team_roadmap(
+    team_id: UUID,
+    payload: RoadmapConfig,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+) -> RoadmapConfig:
+    """Update the team's roadmap configuration. Admin only."""
+    team = _get_team_for_user(db, team_id, current_user.id)
+    
+    # Check if user is admin
+    membership = (
+        db.query(models.TeamMember)
+        .filter_by(team_id=team_id, user_id=current_user.id)
+        .one_or_none()
+    )
+    if not membership or membership.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can edit roadmap")
+    
+    # Update roadmap in settings
+    settings = team.settings or {}
+    settings["roadmap"] = payload.model_dump()
+    team.settings = settings
+    flag_modified(team, "settings")
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    
+    return payload

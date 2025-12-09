@@ -26,6 +26,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class SessionUser(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -102,4 +107,35 @@ def get_current_user(
 @router.get("/me", response_model=SessionUser)
 async def me(current_user: SessionUser = Depends(get_current_user)) -> SessionUser:
     return current_user
+
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: SessionUser = Depends(get_current_user),
+    db: Session = Depends(db_session),
+) -> dict:
+    """Change the current user's password."""
+    from server.security import PasswordService
+    
+    password_service = PasswordService()
+    
+    # Get the user from DB
+    user = db.get(models.User, current_user.id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Verify current password
+    if not password_service.verify(user.password_hash, payload.current_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    
+    # Validate new password
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 8 characters")
+    
+    # Update password
+    user.password_hash = password_service.hash(payload.new_password)
+    db.commit()
+    
+    return {"message": "Password changed successfully"}
 

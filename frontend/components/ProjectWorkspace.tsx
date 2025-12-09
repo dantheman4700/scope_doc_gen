@@ -83,6 +83,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
   const [templateId, setTemplateId] = useState<string>("");
   const [templates, setTemplates] = useState<Array<{ id: string; name: string; mimeType: string; webViewLink: string }>>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState<boolean>(false);
+  const [historyEnabled, setHistoryEnabled] = useState<boolean>(true);
 
   const selectedFiles = useMemo(
     () => files.filter((file) => selectedFileIds.has(file.id)),
@@ -138,6 +139,22 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
       window.clearInterval(interval);
     };
   }, [isPollingRuns, project.id]);
+
+  // Fetch system config on mount
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((data) => {
+        setHistoryEnabled(data.history_enabled ?? false);
+        if (!data.history_enabled) {
+          setVectorStoreEnabled(false);
+        }
+      })
+      .catch(() => {
+        setHistoryEnabled(false);
+        setVectorStoreEnabled(false);
+      });
+  }, []);
 
   // Fetch templates when one-shot mode is selected
   useEffect(() => {
@@ -531,12 +548,16 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                 name="vector_store"
                 value={vectorStoreEnabled ? "enabled" : "disabled"}
                 onChange={(event) => setVectorStoreEnabled(event.target.value === "enabled")}
+                disabled={!historyEnabled}
+                style={!historyEnabled ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
               >
                 <option value="enabled">Enabled</option>
                 <option value="disabled">Disabled</option>
               </select>
               <small style={{ color: "#6b7280" }}>
-                Find similar past scopes to inform estimates
+                {historyEnabled 
+                  ? "Find similar past scopes to inform estimates"
+                  : "Vector store not enabled on this server"}
               </small>
             </div>
           </div>

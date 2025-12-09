@@ -1089,24 +1089,28 @@ Please generate the improved version of the scope document, incorporating the an
         tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
     
     try:
-        response = client.messages.create(
-            model="claude-opus-4-5-20250514",
+        # Use streaming for long operations with extended thinking
+        result_text = ""
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=1,  # Must be 1 when thinking is enabled
             thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             tools=tools,
-        )
+        ) as stream:
+            for event in stream:
+                # Collect text from text delta events
+                if hasattr(event, 'type') and event.type == 'content_block_delta':
+                    if hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                        result_text += event.delta.text
         
-        # Extract the text from the response
-        for block in response.content:
-            if hasattr(block, 'text'):
-                result = block.text.strip()
-                logger.info(f"Regeneration complete, output length: {len(result)}")
-                return result
+        if result_text:
+            logger.info(f"Regeneration complete, output length: {len(result_text)}")
+            return result_text.strip()
         
-        raise ValueError("No text content in response")
+        raise ValueError("No text content in streamed response")
         
     except Exception as exc:
         logger.exception(f"Regeneration failed: {exc}")

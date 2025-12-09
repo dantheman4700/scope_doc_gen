@@ -52,6 +52,94 @@ interface GoogleConnectionStatus {
   can_export: boolean;
 }
 
+interface RoadmapItem {
+  text: string;
+  completed: boolean;
+}
+
+interface RoadmapSection {
+  category: string;
+  items: RoadmapItem[];
+}
+
+interface RoadmapConfig {
+  sections: RoadmapSection[];
+}
+
+// Default roadmap items to pre-populate editor
+const DEFAULT_ROADMAP_ITEMS: RoadmapSection[] = [
+  { category: "UI/UX", items: [
+    { text: "Refresh/cache bugs", completed: false },
+    { text: "Revert SSR", completed: false },
+    { text: "Navigation improvements", completed: false },
+    { text: "Component alignment", completed: false },
+    { text: "Fluid UX", completed: false }
+  ]},
+  { category: "Image Generation", items: [
+    { text: "Auto-insert into DOCX/Google Docs", completed: false },
+    { text: "Standardized graphics", completed: false },
+    { text: "Brand matching", completed: false }
+  ]},
+  { category: "Google Docs Export", items: [
+    { text: "Integrate markgdoc for complex markdown", completed: true },
+    { text: "Inline editing of created Google Docs for quick regen", completed: false },
+    { text: "OAuth to allow all Google users (not just test users)", completed: false }
+  ]},
+  { category: "Auto-outreach", items: [
+    { text: "Slack integration for expert responses", completed: false },
+    { text: "Email for client questions", completed: false }
+  ]},
+  { category: "Document Ingestion", items: [
+    { text: "Fix token counting for complex files", completed: false },
+    { text: "Increase recommended limits", completed: false },
+    { text: "Multi-turn/Sonnet 4.5 1M mode", completed: false }
+  ]},
+  { category: "Admin", items: [
+    { text: "Team/org settings control panel", completed: true },
+    { text: "Improved settings", completed: false },
+    { text: "Improved permissions hierarchies", completed: false }
+  ]},
+  { category: "Account", items: [
+    { text: "Password reset option", completed: false }
+  ]},
+  { category: "API", items: [
+    { text: "Full API with keys for external integration", completed: false }
+  ]},
+  { category: "Vector Store", items: [
+    { text: "Validate full history pipeline", completed: false },
+    { text: "Embeddings viewer/editor", completed: false },
+    { text: "Easy past doc uploads", completed: false }
+  ]},
+  { category: "Questions", items: [
+    { text: "Improved visuals", completed: false },
+    { text: "Per-question response forms", completed: false },
+    { text: "Confidence scoring", completed: false }
+  ]},
+  { category: "Chatbot", items: [
+    { text: "Per-project chatbot experience", completed: false },
+    { text: "Per-team chatbot experience", completed: false }
+  ]},
+  { category: "Multi-Scope", items: [
+    { text: "Generate multiple scopes at once from the same inputs", completed: false }
+  ]},
+  { category: "PSO → Scope", items: [
+    { text: "Reference previous PSO as source for scope generation", completed: false }
+  ]},
+  { category: "Auto-detect", items: [
+    { text: "High-confidence solutions with quick-start buttons for scoping", completed: false }
+  ]}
+];
+
+// Helper to merge user items with defaults (preserves user additions, updates completed status)
+function mergeRoadmapWithDefaults(apiData: RoadmapSection[]): RoadmapSection[] {
+  // If API returned data with items, use it as-is
+  if (apiData && apiData.length > 0) {
+    return apiData;
+  }
+  // Otherwise return defaults
+  return DEFAULT_ROADMAP_ITEMS;
+}
+
 // Inner component that uses searchParams
 function SettingsContent() {
   const searchParams = useSearchParams();
@@ -63,6 +151,17 @@ function SettingsContent() {
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [googleStatus, setGoogleStatus] = useState<GoogleConnectionStatus | null>(null);
   const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [roadmap, setRoadmap] = useState<RoadmapConfig>({ sections: [] });
+  const [isLoadingRoadmap, setIsLoadingRoadmap] = useState(false);
+  const [isSavingRoadmap, setIsSavingRoadmap] = useState(false);
+  const [roadmapMessage, setRoadmapMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newItemTexts, setNewItemTexts] = useState<Record<number, string>>({});
 
   // Check for Google OAuth callback messages
   useEffect(() => {
@@ -116,6 +215,25 @@ function SettingsContent() {
       .catch(() => {
         setSettings(DEFAULT_SETTINGS);
         setIsLoading(false);
+      });
+    
+    // Load global roadmap (shared across all teams)
+    setIsLoadingRoadmap(true);
+    fetch(`/api/system/roadmap`)
+      .then((res) => res.json())
+      .then((data) => {
+        // If API returns empty or no sections, use defaults
+        if (data?.sections && data.sections.length > 0) {
+          setRoadmap(data);
+        } else {
+          setRoadmap({ sections: DEFAULT_ROADMAP_ITEMS });
+        }
+        setIsLoadingRoadmap(false);
+      })
+      .catch(() => {
+        // On error, also pre-populate with defaults
+        setRoadmap({ sections: DEFAULT_ROADMAP_ITEMS });
+        setIsLoadingRoadmap(false);
       });
   }, [selectedTeamId]);
 
@@ -265,6 +383,103 @@ function SettingsContent() {
               </button>
             )}
           </div>
+        </section>
+
+        <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
+
+        <section>
+          <h2>Change Password</h2>
+          <p style={{ color: "#9ca3af", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
+            Update your account password.
+          </p>
+
+          {passwordMessage && (
+            <div className={passwordMessage.type === "success" ? "success-text" : "error-text"} style={{ marginBottom: "0.75rem" }}>
+              {passwordMessage.text}
+            </div>
+          )}
+
+          <div className="form-field">
+            <label htmlFor="current-password">Current Password</label>
+            <input
+              id="current-password"
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              placeholder="Enter current password"
+            />
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="new-password">New Password</label>
+            <input
+              id="new-password"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Enter new password"
+            />
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="confirm-password">Confirm New Password</label>
+            <input
+              id="confirm-password"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm new password"
+            />
+          </div>
+
+          <button
+            className="btn-primary"
+            onClick={async () => {
+              if (!currentPassword || !newPassword || !confirmPassword) {
+                setPasswordMessage({ type: "error", text: "All fields are required" });
+                return;
+              }
+              if (newPassword !== confirmPassword) {
+                setPasswordMessage({ type: "error", text: "New passwords do not match" });
+                return;
+              }
+              if (newPassword.length < 8) {
+                setPasswordMessage({ type: "error", text: "Password must be at least 8 characters" });
+                return;
+              }
+
+              setIsChangingPassword(true);
+              setPasswordMessage(null);
+
+              try {
+                const res = await fetch("/api/auth/change-password", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword,
+                  }),
+                });
+
+                if (!res.ok) {
+                  const data = await res.json();
+                  throw new Error(data.detail || "Failed to change password");
+                }
+
+                setPasswordMessage({ type: "success", text: "Password changed successfully" });
+                setCurrentPassword("");
+                setNewPassword("");
+                setConfirmPassword("");
+              } catch (error) {
+                setPasswordMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to change password" });
+              } finally {
+                setIsChangingPassword(false);
+              }
+            }}
+            disabled={isChangingPassword}
+          >
+            {isChangingPassword ? "Changing..." : "Change Password"}
+          </button>
         </section>
       </div>
 
@@ -490,6 +705,203 @@ function SettingsContent() {
           {isSaving ? "Saving..." : "Save Team Settings"}
         </button>
       </div>
+      </div>
+
+      {/* Roadmap Editor Card */}
+      <div className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <h1 style={{ margin: 0 }}>📋 Roadmap Editor</h1>
+        <p style={{ color: "#9ca3af", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
+          Edit the roadmap items shown on the In Progress page. Admin only.
+        </p>
+
+        {roadmapMessage && (
+          <div className={roadmapMessage.type === "success" ? "success-text" : "error-text"}>
+            {roadmapMessage.text}
+          </div>
+        )}
+
+        {isLoadingRoadmap ? (
+          <p>Loading roadmap...</p>
+        ) : (
+          <>
+            {/* Existing Sections */}
+            {roadmap.sections.map((section, sectionIdx) => (
+              <div 
+                key={sectionIdx} 
+                style={{ 
+                  padding: "1rem", 
+                  background: "#1f2937", 
+                  borderRadius: "0.5rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.75rem"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <h3 style={{ margin: 0, color: "#a5b4fc" }}>{section.category}</h3>
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                    onClick={() => {
+                      const newSections = roadmap.sections.filter((_, i) => i !== sectionIdx);
+                      setRoadmap({ sections: newSections });
+                    }}
+                  >
+                    Remove Section
+                  </button>
+                </div>
+
+                {/* Items in section */}
+                {section.items.map((item, itemIdx) => (
+                  <div key={itemIdx} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={item.completed}
+                      onChange={(e) => {
+                        const newSections = [...roadmap.sections];
+                        newSections[sectionIdx].items[itemIdx].completed = e.target.checked;
+                        setRoadmap({ sections: newSections });
+                      }}
+                    />
+                    <span style={{ 
+                      flex: 1, 
+                      color: item.completed ? "#6b7280" : "#e5e7eb",
+                      textDecoration: item.completed ? "line-through" : "none"
+                    }}>
+                      {item.completed && "✓ "}{item.text}
+                    </span>
+                    <button
+                      style={{ 
+                        background: "transparent", 
+                        border: "none", 
+                        color: "#ef4444", 
+                        cursor: "pointer",
+                        padding: "0.25rem"
+                      }}
+                      onClick={() => {
+                        const newSections = [...roadmap.sections];
+                        newSections[sectionIdx].items = newSections[sectionIdx].items.filter((_, i) => i !== itemIdx);
+                        setRoadmap({ sections: newSections });
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+
+                {/* Add new item to section */}
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input
+                    type="text"
+                    placeholder="New item..."
+                    value={newItemTexts[sectionIdx] || ""}
+                    onChange={(e) => setNewItemTexts((prev) => ({ ...prev, [sectionIdx]: e.target.value }))}
+                    style={{
+                      flex: 1,
+                      padding: "0.375rem 0.5rem",
+                      borderRadius: "0.25rem",
+                      border: "1px solid #374151",
+                      background: "#111827",
+                      color: "#e5e7eb",
+                      fontSize: "0.875rem",
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newItemTexts[sectionIdx]?.trim()) {
+                        const newSections = [...roadmap.sections];
+                        newSections[sectionIdx].items.push({ text: newItemTexts[sectionIdx].trim(), completed: false });
+                        setRoadmap({ sections: newSections });
+                        setNewItemTexts((prev) => ({ ...prev, [sectionIdx]: "" }));
+                      }
+                    }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: "0.375rem 0.5rem", fontSize: "0.75rem" }}
+                    onClick={() => {
+                      if (newItemTexts[sectionIdx]?.trim()) {
+                        const newSections = [...roadmap.sections];
+                        newSections[sectionIdx].items.push({ text: newItemTexts[sectionIdx].trim(), completed: false });
+                        setRoadmap({ sections: newSections });
+                        setNewItemTexts((prev) => ({ ...prev, [sectionIdx]: "" }));
+                      }
+                    }}
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {/* Add new section */}
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+              <input
+                type="text"
+                placeholder="New category name..."
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                style={{
+                  flex: 1,
+                  padding: "0.5rem 0.75rem",
+                  borderRadius: "0.375rem",
+                  border: "1px solid #374151",
+                  background: "#1f2937",
+                  color: "#e5e7eb",
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newCategoryName.trim()) {
+                    setRoadmap((prev) => ({
+                      sections: [...prev.sections, { category: newCategoryName.trim(), items: [] }]
+                    }));
+                    setNewCategoryName("");
+                  }
+                }}
+              />
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  if (newCategoryName.trim()) {
+                    setRoadmap((prev) => ({
+                      sections: [...prev.sections, { category: newCategoryName.trim(), items: [] }]
+                    }));
+                    setNewCategoryName("");
+                  }
+                }}
+              >
+                + Add Category
+              </button>
+            </div>
+
+            {/* Save Roadmap Button */}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem", marginTop: "0.5rem" }}>
+              <button
+                className="btn-primary"
+                onClick={async () => {
+                  setIsSavingRoadmap(true);
+                  setRoadmapMessage(null);
+                  try {
+                    const res = await fetch(`/api/system/roadmap`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(roadmap),
+                    });
+                    if (!res.ok) {
+                      const data = await res.json();
+                      throw new Error(data.detail || "Failed to save roadmap");
+                    }
+                    setRoadmapMessage({ type: "success", text: "Roadmap saved successfully (global)" });
+                  } catch (error) {
+                    setRoadmapMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to save" });
+                  } finally {
+                    setIsSavingRoadmap(false);
+                  }
+                }}
+                disabled={isSavingRoadmap || !selectedTeamId}
+              >
+                {isSavingRoadmap ? "Saving..." : "Save Roadmap"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -89,10 +89,25 @@ def exchange_code_for_tokens(code: str) -> Dict[str, Any]:
     Returns:
         Dictionary with tokens and expiry info
     """
+    import requests
+    
     flow = get_oauth_flow()
     flow.fetch_token(code=code)
     
     credentials = flow.credentials
+    
+    # Try to get user email from Google userinfo API
+    email = None
+    try:
+        userinfo_response = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {credentials.token}"}
+        )
+        if userinfo_response.ok:
+            userinfo = userinfo_response.json()
+            email = userinfo.get("email")
+    except Exception as e:
+        logger.warning(f"Failed to fetch user email: {e}")
     
     return {
         "access_token": credentials.token,
@@ -102,6 +117,7 @@ def exchange_code_for_tokens(code: str) -> Dict[str, Any]:
         "client_secret": credentials.client_secret,
         "scopes": list(credentials.scopes) if credentials.scopes else GOOGLE_SCOPES,
         "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+        "email": email,
     }
 
 
