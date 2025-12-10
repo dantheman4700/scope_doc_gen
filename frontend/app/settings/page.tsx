@@ -162,6 +162,9 @@ function SettingsContent() {
   const [roadmapMessage, setRoadmapMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newItemTexts, setNewItemTexts] = useState<Record<number, string>>({});
+  const [defaultTeamId, setDefaultTeamId] = useState<string>("");
+  const [isSavingPreferences, setIsSavingPreferences] = useState(false);
+  const [preferencesMessage, setPreferencesMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Check for Google OAuth callback messages
   useEffect(() => {
@@ -177,7 +180,7 @@ function SettingsContent() {
     }
   }, [searchParams]);
 
-  // Load teams and Google status on mount
+  // Load teams, Google status, and user preferences on mount
   useEffect(() => {
     fetch("/api/teams")
       .then((res) => res.json())
@@ -198,6 +201,16 @@ function SettingsContent() {
       .then((res) => res.json())
       .then(setGoogleStatus)
       .catch(() => setGoogleStatus(null));
+    
+    // Load user preferences
+    fetch("/api/auth/preferences")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.default_team_id) {
+          setDefaultTeamId(data.default_team_id);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Load settings when team changes - merge with defaults
@@ -305,6 +318,70 @@ function SettingsContent() {
             {message.text}
           </div>
         )}
+
+        <section>
+          <h2>Default Team</h2>
+          <p style={{ color: "#9ca3af", fontSize: "0.875rem", marginTop: "-0.5rem" }}>
+            Set your default team for creating new projects.
+          </p>
+
+          {preferencesMessage && (
+            <div className={preferencesMessage.type === "success" ? "success-text" : "error-text"} style={{ marginBottom: "0.75rem" }}>
+              {preferencesMessage.text}
+            </div>
+          )}
+
+          <div className="form-field">
+            <label htmlFor="default-team">Default Team</label>
+            <select
+              id="default-team"
+              value={defaultTeamId}
+              onChange={(e) => setDefaultTeamId(e.target.value)}
+              disabled={teams.length === 0}
+            >
+              <option value="">No default (choose each time)</option>
+              {teams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            className="btn-primary"
+            onClick={async () => {
+              setIsSavingPreferences(true);
+              setPreferencesMessage(null);
+
+              try {
+                const res = await fetch("/api/auth/preferences", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    default_team_id: defaultTeamId || null,
+                  }),
+                });
+
+                if (!res.ok) {
+                  const data = await res.json();
+                  throw new Error(data.detail || "Failed to save preferences");
+                }
+
+                setPreferencesMessage({ type: "success", text: "Preferences saved successfully" });
+              } catch (error) {
+                setPreferencesMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to save preferences" });
+              } finally {
+                setIsSavingPreferences(false);
+              }
+            }}
+            disabled={isSavingPreferences}
+          >
+            {isSavingPreferences ? "Saving..." : "Save Preferences"}
+          </button>
+        </section>
+
+        <hr style={{ border: "none", borderTop: "1px solid #374151", margin: "0.5rem 0" }} />
 
         <section>
           <h2>Google Account Connection</h2>

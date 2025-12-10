@@ -7,6 +7,11 @@ export interface Project {
     id: string;
     email: string;
   } | null;
+  team_id?: string | null;
+  team?: {
+    id: string;
+    name: string;
+  } | null;
   created_at: string;
   updated_at: string;
 }

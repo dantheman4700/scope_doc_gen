@@ -22,15 +22,10 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@/components/*": [
-        "components/*"
-      ],
-      "@/lib/*": [
-        "lib/*"
-      ],
-      "@/types/*": [
-        "types/*"
-      ]
+      "@/*": ["./*"],
+      "@/components/*": ["components/*"],
+      "@/lib/*": ["lib/*"],
+      "@/types/*": ["types/*"]
     },
     "plugins": [
       {

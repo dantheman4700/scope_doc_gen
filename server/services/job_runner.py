@@ -280,6 +280,10 @@ class JobRegistry:
                 job.status = JobState.RUNNING
                 job.started_at = datetime.utcnow()
         
+        # Determine version number first for the step name
+        next_version_number = 2
+        step_id = None
+        
         try:
             with get_session() as session:
                 run = session.get(models.Run, run_id)
@@ -294,6 +298,9 @@ class JobRegistry:
                     .first()
                 )
                 next_version_number = (latest_version.version_number + 1) if latest_version else 2
+                
+                # Start a run step for tracking in the database
+                step_id = self._start_run_step(run_id, f"Regenerate Version {next_version_number}")
                 
                 # Get original markdown from latest version or artifact
                 original_markdown = None
@@ -390,6 +397,10 @@ class JobRegistry:
                 
                 LOGGER.info(f"Created version {next_version_number} for run {run_id}")
                 
+                # Mark the step as successful in the database
+                if step_id:
+                    self._finish_run_step(step_id, "success", f"Created version {next_version_number}")
+                
                 # Update job status
                 with self._lock:
                     job = self._regen_jobs.get(job_id)
@@ -401,6 +412,11 @@ class JobRegistry:
                 
         except Exception as exc:
             LOGGER.exception(f"Regen job {job_id} failed: {exc}")
+            
+            # Mark the step as failed in the database
+            if step_id:
+                self._finish_run_step(step_id, "failed", str(exc))
+            
             with self._lock:
                 job = self._regen_jobs.get(job_id)
                 if job:

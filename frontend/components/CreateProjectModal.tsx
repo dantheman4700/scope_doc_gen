@@ -29,16 +29,31 @@ export function CreateProjectModal() {
     if (isOpen) {
       setTeamsLoading(true);
       setTeamsError(null);
-      fetch("/api/teams", { cache: "no-store" })
-        .then(async (res) => {
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            const detail = body?.detail || `Failed to load teams (${res.status})`;
-            throw new Error(detail);
+      
+      // Fetch teams and user preferences in parallel
+      Promise.all([
+        fetch("/api/teams", { cache: "no-store" })
+          .then(async (res) => {
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              const detail = body?.detail || `Failed to load teams (${res.status})`;
+              throw new Error(detail);
+            }
+            return res.json();
+          }),
+        fetch("/api/auth/preferences")
+          .then((res) => res.ok ? res.json() : null)
+          .catch(() => null),
+      ])
+        .then(([teamsData, prefsData]) => {
+          const teamsList = Array.isArray(teamsData) ? teamsData : [];
+          setTeams(teamsList);
+          
+          // Auto-select default team if set
+          if (prefsData?.default_team_id && teamsList.some((t: Team) => t.id === prefsData.default_team_id)) {
+            setForm((prev) => ({ ...prev, team_id: prefsData.default_team_id }));
           }
-          return res.json();
         })
-        .then((data) => setTeams(Array.isArray(data) ? data : []))
         .catch((err: Error) => {
           console.error("Failed to load teams", err);
           setTeams([]);

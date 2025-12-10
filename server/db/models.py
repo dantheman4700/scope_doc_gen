@@ -35,6 +35,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow, nullable=False)
     google_tokens: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    preferences: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False, server_default="{}")
 
     projects: Mapped[List["Project"]] = relationship("Project", back_populates="owner")
     teams: Mapped[List["TeamMember"]] = relationship("TeamMember", back_populates="user")

@@ -312,14 +312,21 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
   }, []);
 
   return (
-    <div className="project-workspace" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      <div className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "1rem" }}>
-          <div>
-            <h1>{project.name}</h1>
-            <p>{project.description ?? "No description provided."}</p>
+    <div className="project-workspace flex flex-col gap-6">
+      <div className="card flex flex-col gap-4">
+        <div className="flex justify-between flex-wrap gap-4">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-semibold">{project.name}</h1>
+              {project.team && (
+                <span className="inline-flex items-center rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-xs font-semibold text-indigo-400">
+                  {project.team.name}
+                </span>
+              )}
+            </div>
+            <p className="text-muted-foreground">{project.description ?? "No description provided."}</p>
           </div>
-          <Link href={`/projects/${project.id}/upload`} className="btn-secondary" style={{ alignSelf: "flex-start" }}>
+          <Link href={`/projects/${project.id}/upload`} className="btn-secondary self-start">
             Upload files
           </Link>
         </div>

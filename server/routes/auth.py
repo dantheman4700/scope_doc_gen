@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -29,6 +30,14 @@ class LoginRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class UserPreferencesRequest(BaseModel):
+    default_team_id: Optional[str] = None
+
+
+class UserPreferencesResponse(BaseModel):
+    default_team_id: Optional[str] = None
 
 
 class SessionUser(BaseModel):
@@ -146,4 +155,47 @@ async def change_password(
     db.commit()
     
     return {"message": "Password changed successfully"}
+
+
+@router.get("/preferences", response_model=UserPreferencesResponse)
+async def get_preferences(
+    current_user: SessionUser = Depends(get_current_user),
+    db: Session = Depends(db_session),
+) -> UserPreferencesResponse:
+    """Get current user's preferences."""
+    user = db.get(models.User, current_user.id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    prefs = user.preferences or {}
+    return UserPreferencesResponse(
+        default_team_id=prefs.get("default_team_id"),
+    )
+
+
+@router.put("/preferences", response_model=UserPreferencesResponse)
+async def update_preferences(
+    payload: UserPreferencesRequest,
+    current_user: SessionUser = Depends(get_current_user),
+    db: Session = Depends(db_session),
+) -> UserPreferencesResponse:
+    """Update current user's preferences."""
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    user = db.get(models.User, current_user.id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Update preferences
+    if user.preferences is None:
+        user.preferences = {}
+    
+    user.preferences["default_team_id"] = payload.default_team_id
+    flag_modified(user, "preferences")
+    db.commit()
+    db.refresh(user)
+    
+    return UserPreferencesResponse(
+        default_team_id=user.preferences.get("default_team_id"),
+    )
 

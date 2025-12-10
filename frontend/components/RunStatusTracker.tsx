@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVersion } from "@/types/backend";
+import { useToast } from "@/components/ui/use-toast";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -16,12 +17,19 @@ const TERMINAL_STATUSES = new Set(["success", "failed"]);
 
 export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusTrackerProps) {
   const router = useRouter();
+  const { toast } = useToast();
   const [run, setRun] = useState<RunSummary>(initialRun);
   const [steps, setSteps] = useState<RunStep[]>(initialSteps);
   const [isPolling, setIsPolling] = useState<boolean>(!TERMINAL_STATUSES.has(initialRun.status));
   const [error, setError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  
+  // Helper functions for toast notifications
+  const showSuccess = (message: string) => {
+    toast({ title: "Success", description: message, variant: "default" });
+  };
+  const showError = (message: string) => {
+    toast({ title: "Error", description: message, variant: "destructive" });
+  };
   const [isDownloadingMd, setIsDownloadingMd] = useState<boolean>(false);
   const [isDownloadingDocx, setIsDownloadingDocx] = useState<boolean>(false);
   const [isExportingGdoc, setIsExportingGdoc] = useState<boolean>(false);
@@ -170,8 +178,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const canExport = run.status.toLowerCase() === "success";
 
   const handleDownload = async (kind: "md" | "docx") => {
-    setActionError(null);
-    setActionMessage(null);
     if (kind === "md") setIsDownloadingMd(true);
     if (kind === "docx") setIsDownloadingDocx(true);
     try {
@@ -203,10 +209,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       anchor.remove();
       window.URL.revokeObjectURL(url);
       const versionLabel = selectedVersion ? ` (v${selectedVersion})` : "";
-      setActionMessage(kind === "md" ? `Markdown downloaded${versionLabel}` : `DOCX downloaded${versionLabel}`);
+      showSuccess(kind === "md" ? `Markdown downloaded${versionLabel}` : `DOCX downloaded${versionLabel}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
-      setActionError(message);
+      showError(message);
     } finally {
       if (kind === "md") setIsDownloadingMd(false);
       if (kind === "docx") setIsDownloadingDocx(false);
@@ -214,8 +220,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   };
 
   const handleExportGoogleDoc = async (forceNew: boolean = false) => {
-    setActionError(null);
-    setActionMessage(null);
     setIsExportingGdoc(true);
     try {
       // Build URL with version parameter
@@ -242,13 +246,13 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         setExistingGoogleDocUrl(docUrl);
         window.open(docUrl, "_blank", "noopener,noreferrer");
         const versionInfo = payload.version ? ` (v${payload.version})` : "";
-        setActionMessage(payload.status === "existing" ? `Opened Google Doc${versionInfo}` : `Created new Google Doc${versionInfo}`);
+        showSuccess(payload.status === "existing" ? `Opened Google Doc${versionInfo}` : `Created new Google Doc${versionInfo}`);
       } else {
-        setActionMessage("Google Doc created");
+        showSuccess("Google Doc created");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Export to Google Docs failed";
-      setActionError(message);
+      showError(message);
     } finally {
       setIsExportingGdoc(false);
     }
@@ -261,8 +265,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   };
 
   const handleEmbed = async () => {
-    setActionError(null);
-    setActionMessage(null);
     setIsEmbedding(true);
     try {
       const response = await fetch(`/api/runs/${runId}/embed`, { method: "POST" });
@@ -271,18 +273,16 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         const detail = payload.detail ?? `Embedding failed (${response.status})`;
         throw new Error(detail);
       }
-      setActionMessage("Scope embedded in vector store");
+      showSuccess("Scope embedded in vector store");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Embedding failed";
-      setActionError(message);
+      showError(message);
     } finally {
       setIsEmbedding(false);
     }
   };
 
   const handleGenerateQuestions = async () => {
-    setActionError(null);
-    setActionMessage(null);
     setIsGeneratingQuestions(true);
     try {
       const response = await fetch(`/api/runs/${runId}/generate-questions`, { method: "POST" });
@@ -301,17 +301,16 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           questions_for_client: data.questions_for_client || [],
         },
       }));
-      setActionMessage("Questions generated successfully");
+      showSuccess("Questions generated successfully");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Question generation failed";
-      setActionError(message);
+      showError(message);
     } finally {
       setIsGeneratingQuestions(false);
     }
   };
 
   const handleViewMarkdown = async () => {
-    setActionError(null);
     setIsLoadingMarkdown(true);
     try {
       // Include version parameter when viewing markdown
@@ -327,7 +326,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       setIsViewingMarkdown(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load markdown";
-      setActionError(message);
+      showError(message);
     } finally {
       setIsLoadingMarkdown(false);
     }
@@ -336,9 +335,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const handleCopyMarkdown = async () => {
     try {
       await navigator.clipboard.writeText(markdownContent);
-      setActionMessage("Markdown copied to clipboard");
+      showSuccess("Markdown copied to clipboard");
     } catch {
-      setActionError("Failed to copy to clipboard");
+      showError("Failed to copy to clipboard");
     }
   };
 
@@ -396,12 +395,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
     
     if (!combinedAnswers.trim()) {
-      setActionError("Please provide at least one answer");
+      showError("Please provide at least one answer");
       return;
     }
     
     setIsSubmittingQuickRegen(true);
-    setActionError(null);
     setRegenJobStatus("starting");
     
     // Call the regenerate endpoint to start a background job
@@ -436,7 +434,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             clearInterval(pollInterval);
             setRegenJobStatus(null);
             setIsSubmittingQuickRegen(false);
-            setActionError("Failed to get regen status");
+            showError("Failed to get regen status");
             return;
           }
           
@@ -451,7 +449,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           
           if (status.status === "success") {
             clearInterval(pollInterval);
-            setActionMessage(`Created version ${status.version_number}`);
+            showSuccess(`Created version ${status.version_number}`);
             
             // Record completed regen for display in Steps table
             setCompletedRegens((prev) => [...prev, {
@@ -492,7 +490,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             setRegenJobId(null);
             setRegenJobStatus(null);
             setIsSubmittingQuickRegen(false);
-            setActionError(status.error || "Regeneration failed");
+            showError(status.error || "Regeneration failed");
           }
         } catch {
           // Keep polling on transient errors
@@ -505,13 +503,13 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         if (regenJobStatus === "running") {
           setRegenJobStatus(null);
           setIsSubmittingQuickRegen(false);
-          setActionError("Regeneration timed out");
+          showError("Regeneration timed out");
         }
       }, 600000);
       
     } catch (err) {
       const message = err instanceof Error ? err.message : "Quick regeneration failed";
-      setActionError(message);
+      showError(message);
       setRegenJobStatus(null);
       setIsSubmittingQuickRegen(false);
     }
@@ -581,10 +579,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </p>
           ) : null}
         </div>
-        {/* Messages */}
+        {/* Error state from polling */}
         {error ? <p className="error-text">{error}</p> : null}
-        {actionError ? <p className="error-text">{actionError}</p> : null}
-        {actionMessage ? <p className="success-text">{actionMessage}</p> : null}
         
         {/* Action Buttons - Clean Layout */}
         <div className="run-tracker__actions" style={{ 
@@ -857,7 +853,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_expert.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
+                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
                 <textarea
                   placeholder="Your answer..."
                   value={expertAnswers[idx] || ""}
@@ -893,7 +889,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {questions.questions_for_client.map((q, idx) => (
               <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#111827" }}>{idx + 1}. {q}</label>
+                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
                 <textarea
                   placeholder="Client's answer..."
                   value={clientAnswers[idx] || ""}
@@ -969,7 +965,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             )}
           </div>
           
-          {actionError && <p className="error-text">{actionError}</p>}
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button
               className="btn-primary"

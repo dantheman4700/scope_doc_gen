@@ -43,6 +43,12 @@ class UserSummaryResponse(BaseModel):
     email: str
 
 
+class TeamSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: str
+
+
 class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,6 +58,7 @@ class ProjectResponse(BaseModel):
     flags: dict
     owner: Optional[UserSummaryResponse] = None
     team_id: Optional[UUID] = None
+    team: Optional[TeamSummaryResponse] = None
     created_at: datetime
     updated_at: datetime
 
@@ -59,7 +66,7 @@ class ProjectResponse(BaseModel):
 def _get_project(session: Session, project_id: UUID) -> models.Project:
     project = (
         session.query(models.Project)
-        .options(joinedload(models.Project.owner))
+        .options(joinedload(models.Project.owner), joinedload(models.Project.team))
         .filter(models.Project.id == project_id)
         .one_or_none()
     )
@@ -82,7 +89,7 @@ async def list_projects(
 
     projects = (
         db.query(models.Project)
-        .options(joinedload(models.Project.owner))
+        .options(joinedload(models.Project.owner), joinedload(models.Project.team))
         .filter(
             (models.Project.owner_id == current_user.id) |
             (models.Project.team_id.in_(team_ids))
