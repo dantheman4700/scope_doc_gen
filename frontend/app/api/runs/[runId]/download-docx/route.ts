@@ -6,8 +6,18 @@ interface RouteParams {
   params: { runId: string };
 }
 
-export async function GET(_request: Request, { params }: RouteParams) {
-  const backendResponse = await apiFetch(`/runs/${params.runId}/download-docx`, {
+export async function GET(request: Request, { params }: RouteParams) {
+  // Parse version from query string
+  const url = new URL(request.url);
+  const version = url.searchParams.get("version");
+  
+  // Build backend URL with optional version param
+  let backendUrl = `/runs/${params.runId}/download-docx`;
+  if (version) {
+    backendUrl += `?version=${version}`;
+  }
+
+  const backendResponse = await apiFetch(backendUrl, {
     method: "GET",
     throwIfUnauthorized: false
   });
@@ -18,4 +28,3 @@ export async function GET(_request: Request, { params }: RouteParams) {
     headers
   });
 }
-

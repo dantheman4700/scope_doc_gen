@@ -505,6 +505,7 @@ async def generate_run_questions(
 @run_router.get("/{run_id}/download-docx")
 async def download_run_docx(
     run_id: UUID,
+    version: Optional[int] = Query(None, description="Version number to download (1 = original, 2+ = regenerated)"),
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
 ):
@@ -514,33 +515,52 @@ async def download_run_docx(
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
 
-    artifact = (
-        db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-        .order_by(models.Artifact.created_at.desc())
-        .first()
-    )
+    content: str = ""
+    filename_stem = f"run-{run.id}"
 
-    if artifact is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+    # If version > 1, get markdown from RunVersion table
+    if version and version > 1:
+        run_version = (
+            db.query(models.RunVersion)
+            .filter(models.RunVersion.run_id == run_id, models.RunVersion.version_number == version)
+            .first()
+        )
+        if run_version is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Version {version} not found")
+        if not run_version.markdown:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Version has no markdown content")
+        content = run_version.markdown
+        filename_stem = f"run-{run.id}-v{version}"
+    else:
+        # Get from artifact (v1 / original)
+        artifact = (
+            db.query(models.Artifact)
+            .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+            .order_by(models.Artifact.created_at.desc())
+            .first()
+        )
 
-    project_id_str = str(run.project_id)
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
 
-    try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+        project_id_str = str(run.project_id)
 
-    if not local_path.exists() or not local_path.is_file():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+        try:
+            local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
 
-    try:
-        content = local_path.read_text(encoding="utf-8")
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+        if not local_path.exists() or not local_path.is_file():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+        try:
+            content = local_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+        filename_stem = Path(artifact.path).stem or filename_stem
 
     buffer = markdown_to_docx_bytes(content)
-    filename_stem = Path(artifact.path).stem or f"run-{run.id}"
     docx_filename = f"{filename_stem}.docx"
 
     headers = {
@@ -553,6 +573,7 @@ async def download_run_docx(
 @run_router.get("/{run_id}/download-md")
 async def download_run_md(
     run_id: UUID,
+    version: Optional[int] = Query(None, description="Version number to download (1 = original, 2+ = regenerated)"),
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
 ):
@@ -562,32 +583,51 @@ async def download_run_md(
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
 
-    artifact = (
-        db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-        .order_by(models.Artifact.created_at.desc())
-        .first()
-    )
+    data: bytes = b""
+    filename = f"run-{run.id}.md"
 
-    if artifact is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+    # If version > 1, get markdown from RunVersion table
+    if version and version > 1:
+        run_version = (
+            db.query(models.RunVersion)
+            .filter(models.RunVersion.run_id == run_id, models.RunVersion.version_number == version)
+            .first()
+        )
+        if run_version is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Version {version} not found")
+        if not run_version.markdown:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Version has no markdown content")
+        data = run_version.markdown.encode("utf-8")
+        filename = f"run-{run.id}-v{version}.md"
+    else:
+        # Get from artifact (v1 / original)
+        artifact = (
+            db.query(models.Artifact)
+            .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+            .order_by(models.Artifact.created_at.desc())
+            .first()
+        )
 
-    project_id_str = str(run.project_id)
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
 
-    try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+        project_id_str = str(run.project_id)
 
-    if not local_path.exists() or not local_path.is_file():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+        try:
+            local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
 
-    try:
-        data = local_path.read_bytes()
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+        if not local_path.exists() or not local_path.is_file():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
 
-    filename = Path(artifact.path).name or f"run-{run.id}.md"
+        try:
+            data = local_path.read_bytes()
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+        filename = Path(artifact.path).name or filename
+
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"'
     }
@@ -638,6 +678,7 @@ async def get_solution_graphic(
 async def export_run_google_doc(
     run_id: UUID,
     force: bool = Query(False, description="Force creation of new doc even if one exists"),
+    version: int = Query(None, description="Version number to export (defaults to latest)"),
     current_user: SessionUser = Depends(get_current_user),
     db: Session = Depends(db_session),
     storage: StorageBackend = Depends(get_storage),
@@ -646,7 +687,7 @@ async def export_run_google_doc(
     Export a run's rendered markdown document to Google Docs and return the Doc link.
 
     This is an on-demand operation and will create (or reuse) a single Google Doc
-    per rendered artifact. The resulting Doc URL is stored on the artifact metadata.
+    per version. The resulting Doc URL is stored on the version or artifact metadata.
     """
     # Import Google client libraries lazily so the backend can still run without them.
     # On Python 3.8, importlib.metadata lacks packages_distributions, which some
@@ -693,54 +734,86 @@ async def export_run_google_doc(
             detail=f"Google Docs integration unavailable: {exc}",
         )
 
+    from datetime import datetime as dt
+    
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
 
-    artifact = (
-        db.query(models.Artifact)
-        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-        .order_by(models.Artifact.created_at.desc())
-        .first()
-    )
+    # Try to get content from a specific version if requested
+    run_version = None
+    content = None
+    version_label = ""
+    
+    if version is not None:
+        run_version = (
+            db.query(models.RunVersion)
+            .filter(models.RunVersion.run_id == run_id, models.RunVersion.version_number == version)
+            .first()
+        )
+        if run_version and run_version.markdown:
+            content = run_version.markdown
+            version_label = f" (v{version})"
+            # Check if this version already has a Google Doc
+            # Store doc info in version feedback for now
+            version_meta = run_version.feedback or {}
+            existing_url = version_meta.get("google_doc_url")
+            existing_id = version_meta.get("google_doc_id")
+            if existing_url and existing_id and not force:
+                return {"doc_id": existing_id, "doc_url": existing_url, "status": "existing", "version": version}
 
-    if artifact is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
-
-    # If we've already created a Google Doc for this artifact, return it (unless force=True)
-    existing_url = (artifact.meta or {}).get("google_doc_url")
-    existing_id = (artifact.meta or {}).get("google_doc_id")
-    if existing_url and existing_id and not force:
-        return {"doc_id": existing_id, "doc_url": existing_url, "status": "existing"}
-
-    project_id_str = str(run.project_id)
-
-    try:
-        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download artifact: {exc}",
+    # Fall back to artifact if no version content
+    artifact = None
+    if content is None:
+        artifact = (
+            db.query(models.Artifact)
+            .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+            .order_by(models.Artifact.created_at.desc())
+            .first()
         )
 
-    if not local_path.exists() or not local_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Rendered document is unavailable",
-        )
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
 
-    try:
-        content = local_path.read_text(encoding="utf-8")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read artifact: {exc}",
-        )
+        # If we've already created a Google Doc for this artifact, return it (unless force=True)
+        existing_url = (artifact.meta or {}).get("google_doc_url")
+        existing_id = (artifact.meta or {}).get("google_doc_id")
+        if existing_url and existing_id and not force:
+            return {"doc_id": existing_id, "doc_url": existing_url, "status": "existing"}
 
-    # Derive a reasonable document title from the artifact filename
-    title = Path(artifact.path).stem or f"run-{run.id}"
+        project_id_str = str(run.project_id)
+
+        try:
+            local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to download artifact: {exc}",
+            )
+
+        if not local_path.exists() or not local_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Rendered document is unavailable",
+            )
+
+        try:
+            content = local_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to read artifact: {exc}",
+            )
+
+    # Get project name for the title
+    project = db.get(models.Project, run.project_id)
+    project_name = project.name if project else "Scope"
+    
+    # Create title with date and version
+    today = dt.now().strftime("%Y-%m-%d")
+    title = f"{project_name} - {today}{version_label}"
 
     # Build per-user Google API clients using OAuth tokens
     access_token = get_user_google_access_token(current_user.id, db)
@@ -767,19 +840,34 @@ async def export_run_google_doc(
 
     doc_url = get_google_doc_url(doc_id)
 
-    # Persist the association on the artifact metadata for future reuse
-    meta = dict(artifact.meta or {})
-    meta.update(
-        {
+    # Persist the association for future reuse
+    if run_version:
+        # Save to version's feedback JSONB
+        from sqlalchemy.orm.attributes import flag_modified
+        version_meta = dict(run_version.feedback or {})
+        version_meta.update({
             "google_doc_id": doc_id,
             "google_doc_url": doc_url,
-        }
-    )
-    artifact.meta = meta
-    db.add(artifact)
+        })
+        run_version.feedback = version_meta
+        flag_modified(run_version, "feedback")
+        db.add(run_version)
+    elif artifact:
+        # Save to artifact metadata
+        meta = dict(artifact.meta or {})
+        meta.update({
+            "google_doc_id": doc_id,
+            "google_doc_url": doc_url,
+        })
+        artifact.meta = meta
+        db.add(artifact)
+    
     db.commit()
 
-    return {"doc_id": doc_id, "doc_url": doc_url, "status": "created"}
+    result = {"doc_id": doc_id, "doc_url": doc_url, "status": "created"}
+    if version:
+        result["version"] = version
+    return result
 
 
 # =============================================================================

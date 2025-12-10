@@ -138,7 +138,24 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     return direct ?? fromParams ?? null;
   }, [run.feedback, run.params]);
 
+  // Get questions - use version-specific questions when a version > 1 is selected
   const questions: RunQuestions | null = useMemo(() => {
+    // If a version > 1 is selected, use that version's questions
+    if (selectedVersion && selectedVersion > 1) {
+      const version = versions.find(v => v.version_number === selectedVersion);
+      if (version) {
+        const expertQs = version.questions_for_expert || [];
+        const clientQs = version.questions_for_client || [];
+        if (expertQs.length === 0 && clientQs.length === 0) {
+          return null;
+        }
+        return {
+          questions_for_expert: expertQs,
+          questions_for_client: clientQs,
+        };
+      }
+    }
+    // Fall back to run.params for v1 (original) or when no version selected
     const expertQuestions = (run.params?.questions_for_expert as string[] | undefined) ?? [];
     const clientQuestions = (run.params?.questions_for_client as string[] | undefined) ?? [];
     if (expertQuestions.length === 0 && clientQuestions.length === 0) {
@@ -148,7 +165,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       questions_for_expert: expertQuestions,
       questions_for_client: clientQuestions,
     };
-  }, [run.params]);
+  }, [run.params, selectedVersion, versions]);
 
   const canExport = run.status.toLowerCase() === "success";
 
@@ -158,7 +175,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     if (kind === "md") setIsDownloadingMd(true);
     if (kind === "docx") setIsDownloadingDocx(true);
     try {
-      const endpoint = kind === "md" ? `/api/runs/${runId}/download-md` : `/api/runs/${runId}/download-docx`;
+      // Include version parameter in download URL
+      const versionParam = selectedVersion ? `?version=${selectedVersion}` : "";
+      const baseEndpoint = kind === "md" ? `/api/runs/${runId}/download-md` : `/api/runs/${runId}/download-docx`;
+      const endpoint = `${baseEndpoint}${versionParam}`;
       const response = await fetch(endpoint);
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { detail?: string };
@@ -167,14 +187,14 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      const fallbackName = `run-${run.id}.${kind}`;
+      const fallbackName = `run-${run.id}${selectedVersion && selectedVersion > 1 ? `-v${selectedVersion}` : ""}.${kind}`;
       const resultName = run.result_path ? run.result_path.split("/").pop() ?? fallbackName : fallbackName;
       const filename =
         kind === "docx"
-          ? resultName.replace(/\.md$/i, "") + ".docx"
+          ? resultName.replace(/\.md$/i, "") + (selectedVersion && selectedVersion > 1 ? `-v${selectedVersion}` : "") + ".docx"
           : /\.md$/i.test(resultName)
-          ? resultName
-          : `${resultName}.md`;
+          ? resultName.replace(/\.md$/i, "") + (selectedVersion && selectedVersion > 1 ? `-v${selectedVersion}` : "") + ".md"
+          : `${resultName}${selectedVersion && selectedVersion > 1 ? `-v${selectedVersion}` : ""}.md`;
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = filename;
@@ -182,7 +202,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       anchor.click();
       anchor.remove();
       window.URL.revokeObjectURL(url);
-      setActionMessage(kind === "md" ? "Markdown downloaded" : "DOCX downloaded");
+      const versionLabel = selectedVersion ? ` (v${selectedVersion})` : "";
+      setActionMessage(kind === "md" ? `Markdown downloaded${versionLabel}` : `DOCX downloaded${versionLabel}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
       setActionError(message);
@@ -197,15 +218,20 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     setActionMessage(null);
     setIsExportingGdoc(true);
     try {
-      const url = forceNew 
-        ? `/api/runs/${runId}/export-google-doc?force=true`
-        : `/api/runs/${runId}/export-google-doc`;
+      // Build URL with version parameter
+      const params = new URLSearchParams();
+      if (forceNew) params.set("force", "true");
+      if (selectedVersion) params.set("version", String(selectedVersion));
+      const queryString = params.toString();
+      const url = `/api/runs/${runId}/export-google-doc${queryString ? `?${queryString}` : ""}`;
+      
       const response = await fetch(url, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as {
         doc_url?: string;
         doc_id?: string;
         status?: string;
         detail?: string;
+        version?: number;
       };
       if (!response.ok) {
         const detail = payload.detail ?? `Export failed (${response.status})`;
@@ -215,7 +241,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       if (docUrl) {
         setExistingGoogleDocUrl(docUrl);
         window.open(docUrl, "_blank", "noopener,noreferrer");
-        setActionMessage(payload.status === "existing" ? "Opened Google Doc" : "Created new Google Doc");
+        const versionInfo = payload.version ? ` (v${payload.version})` : "";
+        setActionMessage(payload.status === "existing" ? `Opened Google Doc${versionInfo}` : `Created new Google Doc${versionInfo}`);
       } else {
         setActionMessage("Google Doc created");
       }
@@ -287,7 +314,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     setActionError(null);
     setIsLoadingMarkdown(true);
     try {
-      const response = await fetch(`/api/runs/${runId}/download-md`);
+      // Include version parameter when viewing markdown
+      const versionParam = selectedVersion ? `?version=${selectedVersion}` : "";
+      const response = await fetch(`/api/runs/${runId}/download-md${versionParam}`);
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { detail?: string };
         const detail = payload.detail ?? `Failed to load markdown (${response.status})`;
@@ -317,6 +346,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   useEffect(() => {
     if (run.status.toLowerCase() !== "success") return;
     
+    // Always default to v1 (original) when first loading
+    if (selectedVersion === null) {
+      setSelectedVersion(1);
+    }
+    
     setIsLoadingVersions(true);
     fetch(`/api/runs/${runId}/versions`)
       .then((res) => {
@@ -325,10 +359,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       })
       .then((data: RunVersion[]) => {
         setVersions(data);
-        // If we have versions and none selected, select version 1 (original)
-        if (data.length > 0 && selectedVersion === null) {
-          setSelectedVersion(1);
-        }
       })
       .catch(() => {
         // No versions yet, that's fine
@@ -542,32 +572,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             <span>Started: {formatDate(run.started_at)}</span>
             <span>Finished: {formatDate(run.finished_at)}</span>
           </p>
-          {/* Version selector */}
-          {versions.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.5rem" }}>
-              <span style={{ color: "#9ca3af", fontSize: "0.875rem" }}>Version:</span>
-              <select
-                value={selectedVersion ?? 1}
-                onChange={(e) => setSelectedVersion(Number(e.target.value))}
-                style={{
-                  padding: "0.25rem 0.5rem",
-                  borderRadius: "0.375rem",
-                  border: "1px solid #374151",
-                  background: "#1f2937",
-                  color: "#e5e7eb",
-                  fontSize: "0.875rem",
-                }}
-              >
-                <option value={1}>v1 (Original)</option>
-                {versions.map((v) => (
-                  <option key={v.id} value={v.version_number}>
-                    v{v.version_number} ({formatDate(v.created_at)})
-                  </option>
-                ))}
-              </select>
-              {isLoadingVersions && <span style={{ color: "#6b7280", fontSize: "0.75rem" }}>Loading...</span>}
-            </div>
-          )}
           {run.parent_run_id ? (
             <p className="run-tracker__parent">
               Parent run:{" "}
@@ -577,92 +581,130 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </p>
           ) : null}
         </div>
-        <div className="run-tracker__actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
-          {error ? <p className="error-text" style={{ width: "100%" }}>{error}</p> : null}
-          {actionError ? <p className="error-text" style={{ width: "100%" }}>{actionError}</p> : null}
-          {actionMessage ? <p className="success-text" style={{ width: "100%" }}>{actionMessage}</p> : null}
-          
-          {/* Download Dropdown */}
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <select
-              className="btn-secondary"
-              style={{ padding: "0.5rem 1rem", cursor: "pointer", appearance: "none", paddingRight: "2rem" }}
-              disabled={!canExport}
-              onChange={(e) => {
-                const value = e.target.value;
-                e.target.value = ""; // Reset to placeholder
-                if (value === "view") handleViewMarkdown();
-                else if (value === "md") handleDownload("md");
-                else if (value === "docx") handleDownload("docx");
-              }}
-              defaultValue=""
-            >
-              <option value="" disabled>📥 Download...</option>
-              <option value="view">View Markdown</option>
-              <option value="md">Download Markdown</option>
-              <option value="docx">Download DOCX</option>
-            </select>
-          </div>
-
-          {/* Google Docs Export - Primary Action */}
-          {existingGoogleDocUrl ? (
-            <div style={{ display: "flex", gap: "0.25rem" }}>
-              <button
-                className="btn-primary"
-                type="button"
-                onClick={handleOpenExistingGoogleDoc}
-                disabled={!canExport}
+        {/* Messages */}
+        {error ? <p className="error-text">{error}</p> : null}
+        {actionError ? <p className="error-text">{actionError}</p> : null}
+        {actionMessage ? <p className="success-text">{actionMessage}</p> : null}
+        
+        {/* Action Buttons - Clean Layout */}
+        <div className="run-tracker__actions" style={{ 
+          display: "flex", 
+          flexWrap: "wrap", 
+          gap: "0.75rem", 
+          alignItems: "center",
+          padding: "0.75rem 0",
+          borderTop: "1px solid #374151"
+        }}>
+          {/* Version Selector - Always show v1, show other versions if available */}
+          {canExport && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginRight: "0.5rem" }}>
+              <span style={{ color: "#9ca3af", fontSize: "0.875rem", fontWeight: 500 }}>Version:</span>
+              <select
+                value={selectedVersion ?? 1}
+                onChange={(e) => setSelectedVersion(Number(e.target.value))}
+                style={{
+                  padding: "0.375rem 0.75rem",
+                  borderRadius: "0.375rem",
+                  border: "1px solid #4f46e5",
+                  background: "#1e1b4b",
+                  color: "#a5b4fc",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
               >
-                📄 Open Google Doc
-              </button>
+                {/* Always show v1 (Original) */}
+                <option value={1}>v1 (Original)</option>
+                {/* Show additional versions from API */}
+                {versions
+                  .filter(v => v.version_number > 1)
+                  .sort((a, b) => a.version_number - b.version_number)
+                  .map((v) => (
+                    <option key={v.version_number} value={v.version_number}>
+                      v{v.version_number}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+
+          {/* Divider */}
+          {canExport && <span style={{ color: "#4b5563" }}>|</span>}
+
+          {/* Google Docs Export - Primary with clear state indication */}
+          <div style={{ display: "flex", gap: "0.25rem" }}>
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={() => existingGoogleDocUrl ? handleOpenExistingGoogleDoc() : handleExportGoogleDoc(false)}
+              disabled={!canExport || isExportingGdoc}
+              style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}
+              title={existingGoogleDocUrl ? "Open existing Google Doc" : "Export to Google Docs"}
+            >
+              {isExportingGdoc 
+                ? "⏳ Exporting…" 
+                : existingGoogleDocUrl 
+                  ? `📄 Open Doc${selectedVersion ? ` (v${selectedVersion})` : ""}`
+                  : `📄 Export${selectedVersion ? ` v${selectedVersion}` : ""} to Google Doc`}
+            </button>
+            {existingGoogleDocUrl && (
               <button
                 className="btn-secondary"
                 type="button"
                 onClick={() => handleExportGoogleDoc(true)}
                 disabled={!canExport || isExportingGdoc}
-                title="Create a new Google Doc"
-                style={{ padding: "0.5rem" }}
+                title="Create a new Google Doc (re-export)"
+                style={{ padding: "0.5rem", fontSize: "0.75rem" }}
               >
-                {isExportingGdoc ? "⏳" : "🔄"}
+                🔄
               </button>
-            </div>
-          ) : (
-            <button
-              className="btn-primary"
-              type="button"
-              onClick={() => handleExportGoogleDoc(false)}
-              disabled={!canExport || isExportingGdoc}
-            >
-              {isExportingGdoc ? "Exporting…" : "📄 Export to Google Docs"}
-            </button>
-          )}
-
-          {/* More Actions Dropdown */}
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <select
-              className="btn-secondary"
-              style={{ padding: "0.5rem 1rem", cursor: "pointer", appearance: "none", paddingRight: "2rem" }}
-              disabled={!canExport}
-              onChange={(e) => {
-                const value = e.target.value;
-                e.target.value = ""; // Reset
-                if (value === "vector") handleEmbed();
-              }}
-              defaultValue=""
-            >
-              <option value="" disabled>⚙️ More...</option>
-              <option value="vector" disabled={isEmbedding}>{isEmbedding ? "Saving…" : "Save to Vector Store"}</option>
-            </select>
+            )}
           </div>
 
-          {/* Refresh Button */}
+          {/* Download Dropdown */}
+          <select
+            className="btn-secondary"
+            style={{ 
+              padding: "0.5rem 0.75rem", 
+              cursor: "pointer",
+              border: "1px solid #374151",
+              borderRadius: "0.375rem",
+            }}
+            disabled={!canExport}
+            onChange={(e) => {
+              const value = e.target.value;
+              e.target.value = "";
+              if (value === "view") handleViewMarkdown();
+              else if (value === "md") handleDownload("md");
+              else if (value === "docx") handleDownload("docx");
+            }}
+            defaultValue=""
+          >
+            <option value="" disabled>📥 Download{selectedVersion ? ` v${selectedVersion}` : ""}</option>
+            <option value="view">View Markdown</option>
+            <option value="md">Download .md</option>
+            <option value="docx">Download .docx</option>
+          </select>
+
+          {/* Vector Store - Clear label */}
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={handleEmbed}
+            disabled={!canExport || isEmbedding}
+            title="Save this scope to the vector store for future reference and search"
+            style={{ fontSize: "0.875rem" }}
+          >
+            {isEmbedding ? "💾 Saving…" : "💾 Save to Vector Store"}
+          </button>
+
+          {/* Refresh */}
           <button 
             className="btn-secondary" 
             type="button" 
             onClick={() => setIsPolling(true)} 
             disabled={isPolling}
-            title="Refresh run status"
-            style={{ padding: "0.5rem 0.75rem" }}
+            title="Refresh status"
+            style={{ padding: "0.5rem" }}
           >
             {isPolling ? "⏳" : "🔄"}
           </button>
@@ -1065,7 +1107,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 style={{ margin: 0 }}>Markdown Preview</h2>
+              <h2 style={{ margin: 0 }}>Markdown Preview{selectedVersion ? ` (v${selectedVersion})` : ""}</h2>
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button className="btn-secondary" type="button" onClick={handleCopyMarkdown}>
                   Copy to Clipboard

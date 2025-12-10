@@ -116,14 +116,22 @@ async def change_password(
     db: Session = Depends(db_session),
 ) -> dict:
     """Change the current user's password."""
+    from server.core.config import AUTH_PROVIDER
     from server.security import PasswordService
-    
-    password_service = PasswordService()
     
     # Get the user from DB
     user = db.get(models.User, current_user.id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Check if user is using Supabase auth (no local password hash)
+    if AUTH_PROVIDER == "supabase" or not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Password changes must be done through Supabase. Use the 'Forgot Password' option on the login page."
+        )
+    
+    password_service = PasswordService()
     
     # Verify current password
     if not password_service.verify(user.password_hash, payload.current_password):

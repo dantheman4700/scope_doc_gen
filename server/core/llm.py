@@ -204,9 +204,13 @@ class ClaudeExtractor:
         Generate raw markdown directly (no variable extraction) and capture feedback.
         Returns (markdown, feedback_dict).
         """
+        from datetime import datetime
+        current_date = datetime.now().strftime("%B %d, %Y")  # e.g., "December 8, 2025"
+        
         system_prompt = (
             "You are producing a scope document in markdown that must strictly follow the provided template structure. "
             "Do not change headings or ordering. Keep the content concise and complete. "
+            f"Today's date is {current_date} - use this date for any date fields in the document. "
             "Return a JSON object with keys: "
             '"markdown" (full rendered markdown string) and '
             '"feedback" with keys uncertain_areas, low_confidence_sections, missing_information, notes. '
@@ -221,6 +225,8 @@ class ClaudeExtractor:
 
         # Build user content with the specific oneshot prompt format
         user_parts = [
+            f"Today's date: {current_date}",
+            "",
             "Here are transcripts and example files and other supporting information.",
             "Here is the scope template to follow.",
         ]
@@ -1045,14 +1051,17 @@ def regenerate_with_answers(
     Returns:
         Updated markdown with improvements based on the answers
     """
+    from datetime import datetime
     from anthropic import Anthropic
     from server.core.config import ANTHROPIC_API_KEY, CLAUDE_THINKING_BUDGET
     
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    current_date = datetime.now().strftime("%B %d, %Y")
     
     logger.info(f"Regenerating scope with answers (extra_research={extra_research}, provider={research_provider})")
     
-    system_prompt = """You are a senior solutions architect refining a technical scope document.
+    system_prompt = f"""You are a senior solutions architect refining a technical scope document.
+Today's date is {current_date}.
 
 Your task is to improve the existing scope document using the provided answers and context.
 Make the following types of improvements:
@@ -1060,6 +1069,7 @@ Make the following types of improvements:
 2. Update technical details, timelines, or estimates if the answers provide new information
 3. Add clarifications where ambiguity existed
 4. Ensure consistency throughout the document
+5. Update any date references to use today's date ({current_date}) where appropriate
 
 IMPORTANT:
 - Keep the same overall structure and formatting as the original
