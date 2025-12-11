@@ -175,8 +175,10 @@ class JobRegistry:
         # Apply image generation settings
         if settings.get("enable_solution_image") and not options.enable_image_generation:
             options.enable_image_generation = settings.get("enable_solution_image", False)
+        # Apply image_prompt if not already explicitly set (None or empty string)
         if settings.get("image_prompt") and not options.image_prompt:
             options.image_prompt = settings.get("image_prompt")
+            LOGGER.info(f"Applied team image_prompt: {options.image_prompt[:50]}..." if len(options.image_prompt or "") > 50 else f"Applied team image_prompt: {options.image_prompt}")
         if settings.get("image_resolution"):
             options.image_resolution = settings.get("image_resolution", "4K")
         if settings.get("image_aspect_ratio"):
@@ -364,17 +366,19 @@ class JobRegistry:
                                     proposed_solution += line + "\n"
                             
                             if proposed_solution:
-                                image_data = generate_scope_image(
-                                    proposed_solution[:2000],
-                                    GEMINI_IMAGE_RESOLUTION,
-                                    GEMINI_IMAGE_ASPECT_RATIO,
+                                # Get custom prompt from job params
+                                custom_prompt = job.params.get("image_prompt") if job.params else None
+                                image_result = generate_scope_image(
+                                    solution_text=proposed_solution[:2000],
+                                    custom_prompt=custom_prompt,
+                                    size=GEMINI_IMAGE_RESOLUTION,
                                 )
                                 
-                                if image_data:
+                                if image_result and image_result.data:
                                     version_graphic_filename = f"version_{next_version_number}_graphic.png"
                                     version_graphic_path = Path(DATA_ROOT) / "projects" / project_id_str / "output" / version_graphic_filename
                                     version_graphic_path.parent.mkdir(parents=True, exist_ok=True)
-                                    version_graphic_path.write_bytes(image_data)
+                                    version_graphic_path.write_bytes(image_result.data)
                                     graphic_path = str(version_graphic_path)
                     except Exception as exc:
                         LOGGER.warning(f"Failed to regenerate graphic: {exc}")
@@ -633,12 +637,16 @@ class JobRegistry:
         if not result_rel:
             return
         
+        # Start a step for question generation
+        step_id = self._start_run_step(job.id, "Generate Questions")
+        
         try:
             from server.core.llm import ClaudeExtractor
             
             result_path = paths.root / Path(result_rel)
             if not result_path.exists():
                 LOGGER.warning(f"Result file not found for question generation: {result_path}")
+                self._complete_run_step(step_id, JobState.FAILED, logs="Result file not found")
                 return
             
             scope_markdown = result_path.read_text(encoding="utf-8")
@@ -652,12 +660,16 @@ class JobRegistry:
                 job.params["questions_for_expert"] = questions.get("questions_for_expert", [])
                 job.params["questions_for_client"] = questions.get("questions_for_client", [])
                 self._update_run(job.id, params=job.params)
-                LOGGER.info(f"Auto-generated {len(questions.get('questions_for_expert', []))} expert questions, "
-                           f"{len(questions.get('questions_for_client', []))} client questions")
+                expert_count = len(questions.get('questions_for_expert', []))
+                client_count = len(questions.get('questions_for_client', []))
+                LOGGER.info(f"Auto-generated {expert_count} expert questions, {client_count} client questions")
+                self._complete_run_step(step_id, JobState.SUCCESS, logs=f"Generated {expert_count} expert and {client_count} client questions")
             else:
                 LOGGER.warning("Question generation returned empty results")
+                self._complete_run_step(step_id, JobState.SUCCESS, logs="No questions generated")
         except Exception as exc:
             LOGGER.exception(f"Auto question generation failed for job {job.id}: {exc}")
+            self._complete_run_step(step_id, JobState.FAILED, logs=str(exc))
 
     def _update_run(self, run_id: UUID, **updates) -> None:
         with get_session() as session:

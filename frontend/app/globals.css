@@ -189,8 +189,8 @@
   }
 }
 
-/* Navigation */
-nav {
+/* Navigation - only for top nav bar, not sidebar */
+.nav-top {
   @apply bg-card border-b border-border px-6 py-4 flex justify-between items-center;
 }
 
@@ -206,8 +206,8 @@ nav {
   @apply text-foreground;
 }
 
-/* Main content */
-main {
+/* Main content - apply to .main-content class, not <main> element */
+.main-content {
   @apply px-6 py-8 max-w-7xl mx-auto;
 }
 

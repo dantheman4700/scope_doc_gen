@@ -341,14 +341,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
-  // Fetch versions when run is successful
+  // Fetch versions when run is successful and set default to latest
   useEffect(() => {
     if (run.status.toLowerCase() !== "success") return;
-    
-    // Always default to v1 (original) when first loading
-    if (selectedVersion === null) {
-      setSelectedVersion(1);
-    }
     
     setIsLoadingVersions(true);
     fetch(`/api/runs/${runId}/versions`)
@@ -358,14 +353,53 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       })
       .then((data: RunVersion[]) => {
         setVersions(data);
+        
+        // Default to latest version (highest version_number) or v1 if no versions
+        if (selectedVersion === null) {
+          if (data.length > 0) {
+            const latestVersion = Math.max(...data.map(v => v.version_number));
+            setSelectedVersion(latestVersion);
+            // Check if this version has a Google Doc
+            const latestVersionData = data.find(v => v.version_number === latestVersion);
+            if (latestVersionData?.google_doc_url) {
+              setExistingGoogleDocUrl(latestVersionData.google_doc_url);
+            }
+          } else {
+            setSelectedVersion(1);
+            // Check if original run has a Google Doc
+            if (run.google_doc_url) {
+              setExistingGoogleDocUrl(run.google_doc_url);
+            }
+          }
+        }
       })
       .catch(() => {
-        // No versions yet, that's fine
+        // No versions yet, default to v1
+        if (selectedVersion === null) {
+          setSelectedVersion(1);
+          if (run.google_doc_url) {
+            setExistingGoogleDocUrl(run.google_doc_url);
+          }
+        }
       })
       .finally(() => {
         setIsLoadingVersions(false);
       });
-  }, [runId, run.status, selectedVersion]);
+  }, [runId, run.status]); // Removed selectedVersion from deps to prevent infinite loop
+
+  // Update Google Doc URL when version changes
+  useEffect(() => {
+    if (selectedVersion === null) return;
+    
+    if (selectedVersion === 1) {
+      // For v1 (original), use the run's google_doc_url
+      setExistingGoogleDocUrl(run.google_doc_url || null);
+    } else {
+      // For other versions, find the version's google_doc_url
+      const version = versions.find(v => v.version_number === selectedVersion);
+      setExistingGoogleDocUrl(version?.google_doc_url || null);
+    }
+  }, [selectedVersion, versions, run.google_doc_url]);
 
   const handleQuickRegenWithAnswers = async () => {
     // Combine all answers into a formatted string
@@ -553,44 +587,82 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     };
   }, [run.project_id, includedFileIdSet]);
 
+  // Derive a title from the instructions or template type
+  const runTitle = useMemo(() => {
+    if (run.instructions) {
+      // Check for focus instruction pattern like "We will focus on: XYZ"
+      const focusMatch = run.instructions.match(/(?:focus on|focusing on)[:\s]+(.+?)(?:\s+for\s+the|$)/i);
+      if (focusMatch) {
+        return focusMatch[1].trim();
+      }
+      
+      // Check for "XYZ For the current" pattern
+      const forCurrentMatch = run.instructions.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
+      if (forCurrentMatch) {
+        return forCurrentMatch[1].trim();
+      }
+      
+      // If instructions is short enough (< 60 chars), use it as the title
+      const trimmedInstructions = run.instructions.trim();
+      if (trimmedInstructions.length > 0 && trimmedInstructions.length < 60) {
+        return trimmedInstructions;
+      }
+      
+      // Use first sentence or first 50 chars
+      const firstSentence = trimmedInstructions.split(/[.!?\n]/)[0];
+      if (firstSentence && firstSentence.length > 0 && firstSentence.length < 80) {
+        return firstSentence.trim();
+      }
+    }
+    
+    // Fall back to template type or null
+    return run.template_type ? `${run.template_type} Document` : null;
+  }, [run.instructions, run.template_type]);
+
   return (
-    <div className="run-tracker" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <section className="run-tracker__header">
-        <div>
-          <h1>Run {run.id}</h1>
-          <p className="run-tracker__meta">
-            <span className={statusChip.className}>{statusChip.label}</span>
-            <span>Mode: {run.run_mode}</span>
-            {run.template_type && <span>Template: {run.template_type}</span>}
-            <span>Research: {run.research_mode}</span>
-            {Boolean(run.params?.enable_vector_store) && <span>Vector Search: ✓</span>}
-          </p>
-          <p className="run-tracker__timestamps">
+    <div className="run-tracker flex flex-col gap-6">
+      <section className="card">
+        {/* Header row with title and status */}
+        <div className="flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex flex-col gap-1">
+              <h1 className="text-2xl font-semibold">
+                {runTitle ? `Run: ${runTitle}` : `Run ${run.id.slice(0, 8)}…`}
+              </h1>
+              <span className={statusChip.className}>{statusChip.label}</span>
+            </div>
+          </div>
+          
+          {/* Metadata row - muted and well-spaced */}
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
+            <span>Mode: <span className="text-foreground">{run.run_mode}</span></span>
+            {run.template_type && <span>Template: <span className="text-foreground">{run.template_type}</span></span>}
+            <span>Research: <span className="text-foreground">{run.research_mode}</span></span>
+            {Boolean(run.params?.enable_vector_store) && <span className="text-green-400">✓ Vector Search</span>}
+          </div>
+          
+          {/* Timestamps row - even more muted */}
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground/70">
             <span>Created: {formatDate(run.created_at)}</span>
             <span>Started: {formatDate(run.started_at)}</span>
             <span>Finished: {formatDate(run.finished_at)}</span>
-          </p>
+          </div>
+          
           {run.parent_run_id ? (
-            <p className="run-tracker__parent">
+            <p className="text-sm text-muted-foreground">
               Parent run:{" "}
               <Link className="link" href={`/runs/${run.parent_run_id}`}>
-                {run.parent_run_id}
+                {run.parent_run_id.slice(0, 8)}…
               </Link>
             </p>
           ) : null}
+          
+          {/* Error state from polling */}
+          {error ? <p className="error-text">{error}</p> : null}
         </div>
-        {/* Error state from polling */}
-        {error ? <p className="error-text">{error}</p> : null}
         
         {/* Action Buttons - Clean Layout */}
-        <div className="run-tracker__actions" style={{ 
-          display: "flex", 
-          flexWrap: "wrap", 
-          gap: "0.75rem", 
-          alignItems: "center",
-          padding: "0.75rem 0",
-          borderTop: "1px solid #374151"
-        }}>
+        <div className="flex flex-wrap gap-3 items-center pt-4 mt-4 border-t border-border">
           {/* Version Selector - Always show v1, show other versions if available */}
           {canExport && (
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginRight: "0.5rem" }}>

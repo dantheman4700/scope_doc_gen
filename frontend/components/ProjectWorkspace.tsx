@@ -7,8 +7,8 @@ import { useRouter } from "next/navigation";
 import type { Project, ProjectFile, RunSummary } from "@/types/backend";
 import QuickRegenModal from "./QuickRegenModal";
 
-const MODEL_TOKEN_LIMIT = 100_000;
-const TOKEN_RECOMMENDED_MAX = Math.round(MODEL_TOKEN_LIMIT * 0.5);
+const MODEL_TOKEN_LIMIT = 200_000;
+const TOKEN_RECOMMENDED_MAX = 150_000;
 
 interface ProjectWorkspaceProps {
   project: Project;
@@ -326,9 +326,14 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
             </div>
             <p className="text-muted-foreground">{project.description ?? "No description provided."}</p>
           </div>
-          <Link href={`/projects/${project.id}/upload`} className="btn-secondary self-start">
-            Upload files
-          </Link>
+          <div className="flex gap-2 self-start">
+            <a href="#runs-section" className="btn-secondary">
+              View Runs ({runs.length})
+            </a>
+            <Link href={`/projects/${project.id}/upload`} className="btn-secondary">
+              Upload files
+            </Link>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
           <span>
@@ -437,34 +442,36 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                           <span className="chip chip--info">{usingSummary ? "Summary mode" : "Native mode"}</span>
                         </div>
                       </td>
-                      <td style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                        {!isImageFile(file.filename) ? (
-                          <button
-                            className="btn-secondary"
-                            type="button"
-                            onClick={() => handleSummarize(file.id)}
-                            disabled={summarizing || file.is_summarized}
-                          >
-                            {summarizing ? "Summarizing…" : file.is_summarized ? "Summarized" : "Summarize"}
-                          </button>
-                        ) : null}
-                        {canToggle ? (
-                          <button
-                            className="btn-secondary"
-                            type="button"
-                            onClick={() => handleToggleMode(file.id)}
-                            disabled={toggleDisabled}
-                            title={
-                              file.is_too_large && usingSummary
-                                ? "Large files must use the summary"
-                                : !file.is_summarized && !usingSummary
-                                ? "Summarize file to enable"
-                                : undefined
-                            }
-                          >
-                            {toggling ? "Updating…" : usingSummary ? "Use native" : "Use summary"}
-                          </button>
-                        ) : null}
+                      <td>
+                        <div className="flex gap-2 flex-wrap">
+                          {!isImageFile(file.filename) ? (
+                            <button
+                              className="btn-secondary"
+                              type="button"
+                              onClick={() => handleSummarize(file.id)}
+                              disabled={summarizing || file.is_summarized}
+                            >
+                              {summarizing ? "Summarizing…" : file.is_summarized ? "Summarized" : "Summarize"}
+                            </button>
+                          ) : null}
+                          {canToggle ? (
+                            <button
+                              className="btn-secondary"
+                              type="button"
+                              onClick={() => handleToggleMode(file.id)}
+                              disabled={toggleDisabled}
+                              title={
+                                file.is_too_large && usingSummary
+                                  ? "Large files must use the summary"
+                                  : !file.is_summarized && !usingSummary
+                                  ? "Summarize file to enable"
+                                  : undefined
+                              }
+                            >
+                              {toggling ? "Updating…" : usingSummary ? "Use native" : "Use summary"}
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -590,7 +597,7 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
         </form>
       </section>
 
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <section id="runs-section" className="card scroll-mt-4" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         <h2>Runs</h2>
         <div className="table-wrapper">
           <table className="table">
@@ -629,18 +636,20 @@ export function ProjectWorkspace({ project, initialFiles, initialRuns }: Project
                       <td style={{ maxWidth: "300px", whiteSpace: "normal", wordBreak: "break-word" }}>
                         {instructionText}
                       </td>
-                      <td style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                        <Link className="btn-secondary" href={`/runs/${run.id}`}>
-                          View
-                        </Link>
-                        <button
-                          className="btn-secondary"
-                          type="button"
-                          onClick={() => setQuickRegenRun(run)}
-                          disabled={!canQuickRegen}
-                        >
-                          Quick regen
-                        </button>
+                      <td>
+                        <div className="flex gap-2 flex-wrap">
+                          <Link className="btn-secondary" href={`/runs/${run.id}`}>
+                            View
+                          </Link>
+                          <button
+                            className="btn-secondary"
+                            type="button"
+                            onClick={() => setQuickRegenRun(run)}
+                            disabled={!canQuickRegen}
+                          >
+                            Quick regen
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

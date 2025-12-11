@@ -61,6 +61,29 @@ def get_user_google_access_token(user_id: UUID, db: Session) -> Optional[str]:
     return google_tokens.get("access_token")
 
 
+def get_user_google_tokens(user_id: UUID, db: Session) -> Optional[dict]:
+    """
+    Get the full Google token data for a user (for creating refreshable credentials).
+    
+    Args:
+        user_id: The user's UUID
+        db: Database session
+        
+    Returns:
+        The token data dictionary or None if not available
+    """
+    user = db.get(models.User, user_id)
+    if not user:
+        return None
+    
+    google_tokens = user.google_tokens or {}
+    
+    if not google_tokens or not is_token_valid(google_tokens):
+        return None
+    
+    return google_tokens
+
+
 class GoogleConnectionStatus(BaseModel):
     connected: bool
     email: Optional[str] = None

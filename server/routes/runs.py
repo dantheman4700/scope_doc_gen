@@ -33,7 +33,8 @@ from ..db import models
 from ..storage.projects import ensure_project_structure
 from ..adapters.storage import StorageBackend
 from .auth import SessionUser, get_current_user
-from .google_oauth import get_user_google_access_token
+from .google_oauth import get_user_google_access_token, get_user_google_tokens
+from server.services.google_user_oauth import credentials_from_tokens
 
 
 router = APIRouter(prefix="/projects/{project_id}/runs", tags=["runs"])
@@ -61,6 +62,7 @@ class CreateRunRequest(BaseModel):
     parent_run_id: Optional[UUID] = None
     what_to_change: Optional[str] = None
     template_id: Optional[str] = None  # Google Drive file ID for one-shot mode templates
+    template_type: Optional[str] = None  # "Scope" or "PSO" - document type
 
 
 class RunStatusResponse(BaseModel):
@@ -81,6 +83,8 @@ class RunStatusResponse(BaseModel):
     parent_run_id: Optional[str] = None
     extracted_variables_artifact_id: Optional[UUID] = None
     feedback: Optional[dict] = None
+    google_doc_url: Optional[str] = None
+    google_doc_id: Optional[str] = None
 
 
 class RunStepResponse(BaseModel):
@@ -137,7 +141,21 @@ def _job_to_response(job: JobStatus) -> RunStatusResponse:
     return RunStatusResponse(**data)
 
 
-def _db_run_to_response(run: models.Run) -> RunStatusResponse:
+def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunStatusResponse:
+    # Try to get google doc URL from the rendered_doc artifact
+    google_doc_url = None
+    google_doc_id = None
+    if db and run.status == "success":
+        artifact = (
+            db.query(models.Artifact)
+            .filter(models.Artifact.run_id == run.id, models.Artifact.kind == "rendered_doc")
+            .order_by(models.Artifact.created_at.desc())
+            .first()
+        )
+        if artifact and artifact.meta:
+            google_doc_url = artifact.meta.get("google_doc_url")
+            google_doc_id = artifact.meta.get("google_doc_id")
+    
     return RunStatusResponse(
         id=run.id,
         project_id=str(run.project_id),
@@ -156,6 +174,8 @@ def _db_run_to_response(run: models.Run) -> RunStatusResponse:
         parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
         extracted_variables_artifact_id=run.extracted_variables_artifact_id,
         feedback=(run.params or {}).get("feedback"),
+        google_doc_url=google_doc_url,
+        google_doc_id=google_doc_id,
     )
 
 
@@ -184,7 +204,7 @@ async def list_runs(
             .all()
         )
         for run in db_runs:
-            response = _db_run_to_response(run)
+            response = _db_run_to_response(run, db)
             job = job_map.pop(run.id, None)
             if job is not None:
                 live = _job_to_response(job)
@@ -260,6 +280,7 @@ async def create_run(project_id: str, payload: CreateRunRequest, request: Reques
         parent_run_id=parent_run_id,
         variables_delta=payload.what_to_change,
         template_id=payload.template_id,
+        template_type=payload.template_type,
     )
     job = registry.create_job(project_id, options)
     data = job.to_dict()
@@ -285,9 +306,9 @@ async def get_run(
 
     run = db.get(models.Run, run_id)
     if run is not None and str(run.project_id) == project_id:
-        return _db_run_to_response(run)
+        return _db_run_to_response(run, db)
 
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
 
 @run_router.get("/{run_id}", response_model=RunStatusResponse)
@@ -302,7 +323,7 @@ async def get_run_by_id(run_id: UUID, request: Request, db: Session = Depends(db
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return _db_run_to_response(run)
+    return _db_run_to_response(run, db)
 
 
 @run_router.get("/{run_id}/steps", response_model=List[RunStepResponse])
@@ -815,10 +836,35 @@ async def export_run_google_doc(
     today = dt.now().strftime("%Y-%m-%d")
     title = f"{project_name} - {today}{version_label}"
 
-    # Build per-user Google API clients using OAuth tokens
-    access_token = get_user_google_access_token(current_user.id, db)
+    # Build per-user Google API clients using OAuth tokens with refresh capability
+    token_data = get_user_google_tokens(current_user.id, db)
+    
+    if not token_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google account not connected or token expired. Please reconnect your Google account in Settings.",
+        )
 
-    creds = Credentials(token=access_token, scopes=GOOGLE_OAUTH_SCOPES)
+    creds = credentials_from_tokens(token_data)
+    if not creds:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Failed to create Google credentials. Please reconnect your Google account in Settings.",
+        )
+    
+    # Refresh credentials if expired
+    if creds.expired and creds.refresh_token:
+        try:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            logger.info(f"Refreshed Google OAuth token for user {current_user.id}")
+        except Exception as refresh_exc:
+            logger.warning(f"Failed to refresh Google token: {refresh_exc}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google token expired and refresh failed. Please reconnect your Google account in Settings.",
+            )
+    
     drive_service = build("drive", "v3", credentials=creds)
     docs_service = build("docs", "v1", credentials=creds)
 
@@ -885,6 +931,8 @@ class RunVersionResponse(BaseModel):
     graphic_path: Optional[str] = None
     created_at: datetime
     regen_context: Optional[str] = None
+    google_doc_url: Optional[str] = None
+    google_doc_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -920,7 +968,25 @@ async def list_run_versions(
         .all()
     )
     
-    return versions
+    # Map versions to response, extracting google_doc_url from feedback
+    result = []
+    for v in versions:
+        feedback = v.feedback or {}
+        result.append(RunVersionResponse(
+            id=v.id,
+            run_id=v.run_id,
+            version_number=v.version_number,
+            markdown=v.markdown,
+            feedback=feedback,
+            questions_for_expert=v.questions_for_expert,
+            questions_for_client=v.questions_for_client,
+            graphic_path=v.graphic_path,
+            created_at=v.created_at,
+            regen_context=v.regen_context,
+            google_doc_url=feedback.get("google_doc_url"),
+            google_doc_id=feedback.get("google_doc_id"),
+        ))
+    return result
 
 
 @run_router.get("/{run_id}/versions/{version_number}", response_model=RunVersionResponse)

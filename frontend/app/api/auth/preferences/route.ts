@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
 import { apiFetchJson } from "@/lib/fetch";
-import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const cookieStore = cookies();
-    const data = await apiFetchJson("/auth/preferences", {
-      headers: {
-        Cookie: cookieStore.toString(),
-      },
-    });
-    return NextResponse.json(data);
+    const response = await apiFetchJson<{ default_team_id?: string | null }>("/auth/preferences");
+    
+    if (response.status >= 400) {
+      return NextResponse.json(
+        { error: "Failed to fetch preferences" },
+        { status: response.status }
+      );
+    }
+    
+    // Return just the data, not the wrapper object
+    return NextResponse.json(response.data || {});
   } catch (error) {
     console.error("Failed to fetch preferences:", error);
     return NextResponse.json(
@@ -24,18 +27,25 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
-    const cookieStore = cookies();
     const body = await request.json();
     
-    const data = await apiFetchJson("/auth/preferences", {
+    const response = await apiFetchJson<{ default_team_id?: string | null }>("/auth/preferences", {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
-        Cookie: cookieStore.toString(),
       },
       body: JSON.stringify(body),
     });
-    return NextResponse.json(data);
+    
+    if (response.status >= 400) {
+      return NextResponse.json(
+        { error: "Failed to update preferences" },
+        { status: response.status }
+      );
+    }
+    
+    // Return just the data, not the wrapper object
+    return NextResponse.json(response.data || {});
   } catch (error) {
     console.error("Failed to update preferences:", error);
     return NextResponse.json(

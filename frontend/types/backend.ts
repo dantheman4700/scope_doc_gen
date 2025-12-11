@@ -64,6 +64,8 @@ export interface RunSummary {
   parent_run_id?: string | null;
   extracted_variables_artifact_id?: string | null;
   feedback?: RunFeedback | null;
+  google_doc_url?: string | null;
+  google_doc_id?: string | null;
 }
 
 export interface RunStep {
@@ -110,5 +112,11 @@ export interface RunVersion {
   graphic_path?: string | null;
   created_at: string;
   regen_context?: string | null;
+  google_doc_url?: string | null;
+  google_doc_id?: string | null;
+}
+
+export interface UserPreferences {
+  default_team_id?: string | null;
 }
 
