@@ -92,15 +92,15 @@ export function Sidebar({ user }: SidebarProps) {
               key={item.name}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-all relative",
                 active
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                collapsed && "justify-center px-2"
+                  ? "bg-primary/15 text-primary font-semibold text-base border-l-2 border-primary ml-0 pl-2.5"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground font-medium",
+                collapsed && "justify-center px-2 border-l-0"
               )}
               title={collapsed ? item.name : undefined}
             >
-              <item.icon className="h-5 w-5 shrink-0" />
+              <item.icon className={cn("shrink-0", active ? "h-5 w-5" : "h-5 w-5")} />
               {!collapsed && <span>{item.name}</span>}
             </Link>
           );
@@ -114,11 +114,11 @@ export function Sidebar({ user }: SidebarProps) {
             <Link
               href="/settings"
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-all",
                 isActive("/settings")
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                collapsed && "justify-center px-2"
+                  ? "bg-primary/15 text-primary font-semibold text-base border-l-2 border-primary ml-0 pl-2.5"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground font-medium",
+                collapsed && "justify-center px-2 border-l-0"
               )}
               title={collapsed ? "Settings" : undefined}
             >

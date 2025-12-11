@@ -18,6 +18,7 @@ interface BreadcrumbsProps {
   projectId?: string;
   projectName?: string;
   runTitle?: string;
+  documentTitle?: string;
 }
 
 // Route name mappings
@@ -43,6 +44,7 @@ interface RunData {
   instructions: string | null;
   template_type: string | null;
   project_id: string;
+  document_title?: string | null;
 }
 
 interface ProjectData {
@@ -50,7 +52,7 @@ interface ProjectData {
   name: string;
 }
 
-export function Breadcrumbs({ items, className = "", projectId, projectName, runTitle }: BreadcrumbsProps) {
+export function Breadcrumbs({ items, className = "", projectId, projectName, runTitle, documentTitle }: BreadcrumbsProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [dropdown, setDropdown] = useState<DropdownState>({ isOpen: false, items: [], position: { x: 0, y: 0 }, type: null });
@@ -61,16 +63,26 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
 
-  // Close dropdown when clicking outside
+  // Close dropdown when clicking outside - use click event and check if target is breadcrumb nav
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdown(prev => ({ ...prev, isOpen: false }));
+      const target = event.target as Node;
+      // Don't close if clicking within the dropdown
+      if (dropdownRef.current && dropdownRef.current.contains(target)) {
+        return;
       }
+      // Don't close if clicking within the breadcrumb nav (buttons will handle their own logic)
+      if (navRef.current && navRef.current.contains(target)) {
+        return;
+      }
+      // Close dropdown for clicks outside both areas
+      setDropdown(prev => ({ ...prev, isOpen: false }));
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    // Use click instead of mousedown to avoid race conditions
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
   // Fetch projects list on mount
@@ -146,38 +158,50 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
   }, [pathname]);
 
   // Derive run title from run data - improved extraction
+  // Priority: documentTitle prop > document_title from API > runTitle prop > instruction parsing > template type
   const derivedRunTitle = useMemo(() => {
+    // 1. Use documentTitle prop if provided (from RunStatusTracker)
+    if (documentTitle) return documentTitle;
+    
+    // 2. Use runTitle prop if provided
     if (runTitle) return runTitle;
+    
     if (!currentRun) return null;
+    
+    // 3. Use document_title from API (extracted from markdown H1)
+    if (currentRun.document_title) {
+      const t = currentRun.document_title;
+      return t.slice(0, 50) + (t.length > 50 ? "…" : "");
+    }
     
     const instr = currentRun.instructions || "";
     
-    // Check for focus instruction pattern: "focus on XYZ" or "focusing on XYZ"
+    // 4. Check for focus instruction pattern: "focus on XYZ" or "focusing on XYZ"
     const focusMatch = instr.match(/(?:focus(?:ing)?\s+on)[:\s]+([^.]+)/i);
     if (focusMatch) {
       const t = focusMatch[1].replace(/\s+for\s+the.*$/i, "").trim();
       return t.slice(0, 45) + (t.length > 45 ? "…" : "");
     }
     
-    // Check for "XYZ for the current project" pattern
+    // 5. Check for "XYZ for the current project" pattern
     const forMatch = instr.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
     if (forMatch) {
       const t = forMatch[1].trim();
       return t.slice(0, 45) + (t.length > 45 ? "…" : "");
     }
     
-    // Use short instructions if meaningful
+    // 6. Use short instructions if meaningful
     if (instr.length > 5 && instr.length < 50) {
       return instr;
     }
     
-    // Fall back to template type
+    // 7. Fall back to template type
     if (currentRun.template_type) {
       return `${currentRun.template_type} Document`;
     }
     
     return null; // Will show "Run" with UUID truncated
-  }, [currentRun, runTitle]);
+  }, [currentRun, runTitle, documentTitle]);
 
   const breadcrumbs = useMemo(() => {
     // If custom items are provided, use them
@@ -380,7 +404,7 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
 
   return (
     <>
-      <nav aria-label="Breadcrumb" className={`flex items-center gap-1 text-sm ${className}`}>
+      <nav ref={navRef} aria-label="Breadcrumb" className={`flex items-center gap-1 text-sm ${className}`}>
         <Link
           href="/projects"
           className="flex items-center text-muted-foreground hover:text-foreground transition-colors"

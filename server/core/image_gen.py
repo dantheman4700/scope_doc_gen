@@ -159,7 +159,7 @@ def generate_scope_image(
     
     Args:
         solution_text: The proposed solution section content
-        custom_prompt: Optional custom prompt template (use {solution_text} placeholder)
+        custom_prompt: Optional custom prompt template (use {solution_text} or {solutions_text} placeholder)
         size: Image size
         api_key: Optional API key override
     
@@ -167,7 +167,11 @@ def generate_scope_image(
         ImageResult with the generated image
     """
     prompt_template = custom_prompt or SCOPE_IMAGE_PROMPT
-    prompt = prompt_template.format(solution_text=solution_text)
+    # Support both placeholder names for compatibility with custom prompts
+    prompt = prompt_template.format(
+        solution_text=solution_text,
+        solutions_text=solution_text  # Also provide plural form for PSO prompts
+    )
     return generate_image(prompt, size=size, api_key=api_key)
 
 
@@ -183,7 +187,7 @@ def generate_pso_image(
     
     Args:
         solutions_text: The detailed solution breakdown content
-        custom_prompt: Optional custom prompt template (use {solutions_text} placeholder)
+        custom_prompt: Optional custom prompt template (use {solutions_text} or {solution_text} placeholder)
         size: Image size
         api_key: Optional API key override
     
@@ -191,6 +195,10 @@ def generate_pso_image(
         ImageResult with the generated image
     """
     prompt_template = custom_prompt or PSO_IMAGE_PROMPT
-    prompt = prompt_template.format(solutions_text=solutions_text)
+    # Support both placeholder names for compatibility with custom prompts
+    prompt = prompt_template.format(
+        solutions_text=solutions_text,
+        solution_text=solutions_text  # Also provide singular form for scope prompts
+    )
     return generate_image(prompt, size=size, api_key=api_key)
 

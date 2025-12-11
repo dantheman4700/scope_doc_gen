@@ -97,13 +97,10 @@ export function MarkdownEditorModal({
 
   if (!isOpen) return null;
 
-  // Calculate next version string
-  const nextSubVersion = currentSubVersion + 1;
-  const versionDisplay = hasChanges 
-    ? `v${version}.${nextSubVersion}` 
-    : currentSubVersion > 0 
-      ? `v${version}.${currentSubVersion}`
-      : `v${version}`;
+  // Display current version (not predicted)
+  const versionDisplay = currentSubVersion > 0 
+    ? `v${version}.${currentSubVersion}`
+    : `v${version}`;
 
   return (
     <div
@@ -163,7 +160,7 @@ export function MarkdownEditorModal({
               style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
             >
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save as v{version}.{nextSubVersion}
+              {isSaving ? "Saving..." : "Save"}
             </button>
             
             {/* Copy button */}

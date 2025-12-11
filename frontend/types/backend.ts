@@ -66,6 +66,7 @@ export interface RunSummary {
   feedback?: RunFeedback | null;
   google_doc_url?: string | null;
   google_doc_id?: string | null;
+  document_title?: string | null;
 }
 
 export interface RunStep {

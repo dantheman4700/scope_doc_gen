@@ -1616,9 +1616,16 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }
               const result = await response.json();
               setMarkdownContent(newContent);
-              showSuccess(result.message || `Saved as v${result.version}.${result.sub_version}`);
-              // Refresh versions list to include the edit
-              fetchVersions();
+              showSuccess(result.message || `Saved as v${result.version_number || result.version}.${result.sub_version}`);
+              
+              // Refresh versions list to include the new sub-version
+              const updatedVersions = await fetchVersions();
+              
+              // Select the newly created version if version_number is returned
+              if (result.version_number && updatedVersions) {
+                setSelectedVersion(result.version_number);
+              }
+              
               return { 
                 success: true, 
                 sub_version: result.sub_version,

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { ChevronRight, ChevronLeft, FileText, Play } from "lucide-react";
+import { ChevronRight, ChevronLeft, Play, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface TocSection {
@@ -25,18 +25,41 @@ interface RightSidebarProps {
   className?: string;
 }
 
-export function RightSidebar({ sections = [], projectId, recentRuns = [], className = "" }: RightSidebarProps) {
+export function RightSidebar({ sections = [], projectId, recentRuns: propRecentRuns = [], className = "" }: RightSidebarProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [fetchedRuns, setFetchedRuns] = useState<RecentRun[]>([]);
+  const tocContainerRef = useRef<HTMLDivElement>(null);
+
+  // Fetch recent runs if projectId is provided but no runs passed
+  useEffect(() => {
+    if (projectId && propRecentRuns.length === 0) {
+      fetch(`/api/projects/${projectId}/runs`)
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setFetchedRuns(
+              data.slice(0, 5).map((r: any) => ({
+                id: r.id,
+                title: r.document_title || r.instructions?.slice(0, 30) || r.template_type || r.id.slice(0, 8),
+                templateType: r.template_type,
+              }))
+            );
+          }
+        })
+        .catch(() => {});
+    }
+  }, [projectId, propRecentRuns.length]);
+
+  const recentRuns = propRecentRuns.length > 0 ? propRecentRuns : fetchedRuns;
 
   // Track scroll position to highlight active section
   useEffect(() => {
+    if (sections.length === 0) return;
+
     const handleScroll = () => {
-      if (sections.length === 0) return;
-      
       const scrollPos = window.scrollY + 150; // Offset for header
       
       // Find the current section
@@ -73,6 +96,27 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
     }
   }, [collapsed, mounted]);
 
+  // Scroll TOC to center active item
+  useEffect(() => {
+    if (!tocContainerRef.current || !activeSection) return;
+    
+    const activeButton = tocContainerRef.current.querySelector(`[data-section-id="${activeSection}"]`) as HTMLElement;
+    if (activeButton) {
+      const container = tocContainerRef.current;
+      const containerHeight = container.clientHeight;
+      const buttonTop = activeButton.offsetTop;
+      const buttonHeight = activeButton.clientHeight;
+      
+      // Calculate scroll position to center the active item
+      const targetScroll = buttonTop - (containerHeight / 2) + (buttonHeight / 2);
+      
+      container.scrollTo({
+        top: Math.max(0, targetScroll),
+        behavior: "smooth",
+      });
+    }
+  }, [activeSection]);
+
   const scrollToSection = useCallback((id: string) => {
     const element = document.getElementById(id);
     if (element) {
@@ -88,11 +132,13 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
   // Determine visibility of sections based on active state (wheel effect)
   const getItemStyle = useCallback((sectionId: string, index: number): React.CSSProperties => {
     const activeIndex = sections.findIndex(s => s.id === activeSection);
+    if (activeIndex === -1) return {};
+    
     const distance = Math.abs(index - activeIndex);
     
-    // Scale based on distance from active
-    const scale = activeSection === sectionId ? 1 : Math.max(0.7, 1 - distance * 0.1);
-    const opacity = activeSection === sectionId ? 1 : Math.max(0.5, 1 - distance * 0.15);
+    // Scale and opacity based on distance from active
+    const scale = sectionId === activeSection ? 1 : Math.max(0.85, 1 - distance * 0.05);
+    const opacity = sectionId === activeSection ? 1 : Math.max(0.5, 1 - distance * 0.15);
     
     return {
       transform: `scale(${scale})`,
@@ -102,12 +148,25 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
   }, [activeSection, sections]);
 
   const isRunPage = pathname.startsWith("/runs/");
-  const isProjectPage = pathname.startsWith("/projects/");
+  const isProjectPage = pathname.startsWith("/projects/") && pathname !== "/projects";
+  const isProjectsHome = pathname === "/projects" || pathname === "/projects/";
+  const isSettingsPage = pathname.startsWith("/settings");
+  const isDocsPage = pathname.startsWith("/docs");
+  const isRoadmapPage = pathname.startsWith("/roadmap");
+
+  // Don't show on projects home page
+  if (isProjectsHome) {
+    return null;
+  }
+
   const showToc = sections.length > 0 && isRunPage;
   const showRuns = (isProjectPage || isRunPage) && recentRuns.length > 0;
 
-  // Don't render if nothing to show
-  if (!showToc && !showRuns) {
+  // Show sidebar on all pages except /projects home, but may be empty for settings/docs/roadmap
+  const hasContent = showToc || showRuns;
+
+  // For pages without content, show a minimal collapsed sidebar indicator
+  if (!hasContent && !isSettingsPage && !isDocsPage && !isRoadmapPage) {
     return null;
   }
 
@@ -131,42 +190,48 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
       </div>
 
       {!collapsed && (
-        <div className="flex-1 overflow-y-auto py-4 px-2">
-          {/* Table of Contents */}
+        <div className="flex-1 flex flex-col overflow-hidden py-4 px-2">
+          {/* Table of Contents - with vertical centering via flex */}
           {showToc && (
-            <div className="mb-6">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-2 mb-3">
+            <div className="flex-1 flex flex-col min-h-0 mb-4">
+              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-2 mb-3 shrink-0">
                 On this page
               </div>
-              <nav className="flex flex-col items-center">
-                {sections.map((section, index) => {
-                  const isActive = activeSection === section.id;
-                  return (
-                    <button
-                      key={section.id}
-                      onClick={() => scrollToSection(section.id)}
-                      className={cn(
-                        "w-full text-left px-3 py-1.5 rounded-md transition-all text-sm",
-                        isActive
-                          ? "bg-primary/15 text-primary font-medium"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                      )}
-                      style={getItemStyle(section.id, index)}
-                      title={section.title}
-                    >
-                      <span className="block truncate">
-                        {section.title}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
+              <div 
+                ref={tocContainerRef}
+                className="flex-1 overflow-y-auto flex flex-col justify-center"
+              >
+                <nav className="flex flex-col">
+                  {sections.map((section, index) => {
+                    const isActive = activeSection === section.id;
+                    return (
+                      <button
+                        key={section.id}
+                        data-section-id={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className={cn(
+                          "w-full text-left px-3 py-1.5 rounded-md transition-all text-sm my-0.5",
+                          isActive
+                            ? "bg-primary/20 text-primary font-semibold border-l-2 border-primary"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                        )}
+                        style={getItemStyle(section.id, index)}
+                        title={section.title}
+                      >
+                        <span className="block truncate">
+                          {section.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </nav>
+              </div>
             </div>
           )}
 
           {/* Recent Runs */}
           {showRuns && (
-            <div>
+            <div className="shrink-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-2 mb-3">
                 Recent Runs
               </div>
@@ -178,7 +243,7 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
                     className={cn(
                       "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
                       pathname === `/runs/${run.id}`
-                        ? "bg-primary/15 text-primary font-medium"
+                        ? "bg-primary/20 text-primary font-medium border-l-2 border-primary"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                     )}
                   >
@@ -189,6 +254,15 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
               </nav>
             </div>
           )}
+
+          {/* Show helpful message if no content */}
+          {!showToc && !showRuns && (
+            <div className="flex-1 flex items-center justify-center">
+              <p className="text-xs text-muted-foreground text-center px-2">
+                Navigation will appear when viewing runs
+              </p>
+            </div>
+          )}
         </div>
       )}
     </aside>
@@ -196,4 +270,3 @@ export function RightSidebar({ sections = [], projectId, recentRuns = [], classN
 }
 
 export default RightSidebar;
-

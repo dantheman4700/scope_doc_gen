@@ -85,6 +85,7 @@ class RunStatusResponse(BaseModel):
     feedback: Optional[dict] = None
     google_doc_url: Optional[str] = None
     google_doc_id: Optional[str] = None
+    document_title: Optional[str] = None  # Extracted H1 from markdown
 
 
 class RunStepResponse(BaseModel):
@@ -169,10 +170,44 @@ def _job_to_response(job: JobStatus) -> RunStatusResponse:
     return RunStatusResponse(**data)
 
 
+def _extract_document_title(artifact_path: Optional[str], project_id: str) -> Optional[str]:
+    """Extract the H1 title from a markdown document."""
+    if not artifact_path:
+        return None
+    try:
+        # Build the full path
+        full_path = Path(DATA_ROOT) / "projects" / project_id / artifact_path
+        if not full_path.exists():
+            # Try the path as-is
+            full_path = Path(artifact_path)
+        if not full_path.exists():
+            return None
+        
+        # Read first 2000 chars to find the title
+        content = full_path.read_text(encoding="utf-8")[:2000]
+        
+        # Look for H1 (# Title) at the start of a line
+        import re
+        h1_match = re.search(r'^#\s+(.+?)$', content, re.MULTILINE)
+        if h1_match:
+            title = h1_match.group(1).strip()
+            # Clean up any markdown formatting
+            title = re.sub(r'\*\*(.+?)\*\*', r'\1', title)  # Bold
+            title = re.sub(r'\*(.+?)\*', r'\1', title)  # Italic
+            return title[:100]  # Limit length
+        
+        return None
+    except Exception:
+        return None
+
+
 def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunStatusResponse:
     # Try to get google doc URL from the rendered_doc artifact
     google_doc_url = None
     google_doc_id = None
+    document_title = None
+    artifact = None
+    
     if db and run.status == "success":
         artifact = (
             db.query(models.Artifact)
@@ -180,9 +215,12 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
             .order_by(models.Artifact.created_at.desc())
             .first()
         )
-        if artifact and artifact.meta:
-            google_doc_url = artifact.meta.get("google_doc_url")
-            google_doc_id = artifact.meta.get("google_doc_id")
+        if artifact:
+            if artifact.meta:
+                google_doc_url = artifact.meta.get("google_doc_url")
+                google_doc_id = artifact.meta.get("google_doc_id")
+            # Extract document title from markdown H1
+            document_title = _extract_document_title(artifact.path, str(run.project_id))
     
     return RunStatusResponse(
         id=run.id,
@@ -204,6 +242,7 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
         feedback=(run.params or {}).get("feedback"),
         google_doc_url=google_doc_url,
         google_doc_id=google_doc_id,
+        document_title=document_title,
     )
 
 
@@ -760,86 +799,77 @@ async def save_run_markdown(
 ):
     """
     Save edited markdown content for a run version.
-    Creates a sub-version by incrementing the edit count in version feedback.
+    Creates a new sub-version entry (e.g., 1.1, 1.2, 2.1) that appears in the version dropdown.
     """
-    from sqlalchemy.orm.attributes import flag_modified
-    
     run = db.get(models.Run, run_id)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
-    # Create a step record for this edit
-    step = _create_step(db, run_id, f"Edit Markdown v{request.version}")
-    # Get or create the version
-    if request.version == 1:
-        # For v1, we update the artifact directly
-        artifact = (
-            db.query(models.Artifact)
-            .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
-            .order_by(models.Artifact.created_at.desc())
-            .first()
+    base_version = int(request.version)  # The major version being edited (1, 2, 3, etc.)
+    
+    # Find the highest sub-version for this major version
+    # Sub-versions are like 1.1, 1.2, 2.1, 2.2 etc.
+    existing_sub_versions = (
+        db.query(models.RunVersion)
+        .filter(
+            models.RunVersion.run_id == run_id,
+            models.RunVersion.version_number >= base_version,
+            models.RunVersion.version_number < base_version + 1
         )
-        
-        if artifact is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No document found to edit")
-        
-        # Track edit count in artifact meta
-        meta = dict(artifact.meta or {})
-        edit_count = meta.get("edit_count", 0) + 1
-        meta["edit_count"] = edit_count
-        meta["last_edited"] = datetime.utcnow().isoformat()
-        artifact.meta = meta
-        flag_modified(artifact, "meta")
-        
-        # Update the actual file content
-        project_id_str = str(run.project_id)
-        output_dir = Path(DATA_ROOT) / "projects" / project_id_str / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        local_path = output_dir / Path(artifact.path).name
-        local_path.write_text(request.markdown, encoding="utf-8")
-        
-        db.add(artifact)
-        db.commit()
-        
-        _finish_step(db, step, "success", f"Saved as v1.{edit_count}")
-        return {
-            "success": True,
-            "version": 1,
-            "sub_version": edit_count,
-            "message": f"Saved as v1.{edit_count}",
-        }
+        .all()
+    )
+    
+    # Calculate next sub-version number
+    if existing_sub_versions:
+        max_sub = max(v.version_number for v in existing_sub_versions)
+        # If max is whole number (e.g., 2), next is 2.1
+        # If max is 2.3, next is 2.4
+        if max_sub == base_version:
+            next_version = base_version + 0.1
+        else:
+            next_version = max_sub + 0.1
     else:
-        # For other versions, update the RunVersion
-        run_version = (
-            db.query(models.RunVersion)
-            .filter(models.RunVersion.run_id == run_id, models.RunVersion.version_number == request.version)
-            .first()
+        # No sub-versions yet, create X.1
+        next_version = base_version + 0.1
+    
+    # Round to avoid floating point issues
+    next_version = round(next_version, 1)
+    sub_version = int(round((next_version - base_version) * 10))
+    
+    # Create a step record for this edit
+    step = _create_step(db, run_id, f"Edit Markdown v{base_version} → v{next_version}")
+    
+    try:
+        # Create a new RunVersion entry for this sub-version
+        new_version = models.RunVersion(
+            run_id=run_id,
+            version_number=next_version,
+            markdown=request.markdown,
+            feedback={"parent_version": base_version, "edit_number": sub_version},
+            questions_for_expert=[],
+            questions_for_client=[],
+            graphic_path=None,
+            regen_context=f"Manual edit of v{base_version}",
         )
-        
-        if not run_version:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Version {request.version} not found")
-        
-        # Track edit count in feedback
-        feedback = dict(run_version.feedback or {})
-        edit_count = feedback.get("edit_count", 0) + 1
-        feedback["edit_count"] = edit_count
-        feedback["last_edited"] = datetime.utcnow().isoformat()
-        run_version.feedback = feedback
-        run_version.markdown = request.markdown
-        flag_modified(run_version, "feedback")
-        flag_modified(run_version, "markdown")
-        
-        db.add(run_version)
+        db.add(new_version)
         db.commit()
+        db.refresh(new_version)
         
-        _finish_step(db, step, "success", f"Saved as v{request.version}.{edit_count}")
+        _finish_step(db, step, "success", f"Saved as v{next_version}")
         return {
             "success": True,
-            "version": request.version,
-            "sub_version": edit_count,
-            "message": f"Saved as v{request.version}.{edit_count}",
+            "version": base_version,
+            "sub_version": sub_version,
+            "version_number": next_version,
+            "message": f"Saved as v{next_version}",
         }
+    except Exception as exc:
+        logger.exception(f"Failed to save markdown for run {run_id}")
+        _finish_step(db, step, "failed", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save markdown: {exc}"
+        )
 
 
 @run_router.get("/{run_id}/download-docx")

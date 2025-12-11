@@ -15,9 +15,6 @@ interface SidebarLayoutProps {
 // Pages that should NOT show the sidebar
 const noSidebarPaths = ["/login", "/register"];
 
-// Pages that should show the right sidebar
-const rightSidebarPaths = ["/runs/", "/projects/"];
-
 export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -25,7 +22,13 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   const [mounted, setMounted] = useState(false);
   
   const showSidebar = !noSidebarPaths.includes(pathname);
-  const showRightSidebar = rightSidebarPaths.some(p => pathname.startsWith(p));
+  
+  // Show right sidebar on run pages and project detail pages (not /projects home)
+  const isProjectsHome = pathname === "/projects" || pathname === "/projects/";
+  const showRightSidebar = !isProjectsHome && (
+    pathname.startsWith("/runs/") || 
+    (pathname.startsWith("/projects/") && pathname !== "/projects" && pathname !== "/projects/")
+  );
 
   useEffect(() => {
     setMounted(true);

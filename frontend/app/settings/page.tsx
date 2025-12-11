@@ -365,7 +365,19 @@ function SettingsContent() {
 
                 if (!res.ok) {
                   const data = await res.json();
-                  throw new Error(data.detail || "Failed to save preferences");
+                  // Handle both string and array error formats from FastAPI
+                  let errorMessage = "Failed to save preferences";
+                  if (data.detail) {
+                    if (Array.isArray(data.detail)) {
+                      // FastAPI validation error format: [{loc: [...], msg: "...", type: "..."}]
+                      errorMessage = data.detail.map((e: { msg?: string; message?: string }) => e.msg || e.message || "Validation error").join(", ");
+                    } else if (typeof data.detail === "string") {
+                      errorMessage = data.detail;
+                    } else if (typeof data.detail === "object") {
+                      errorMessage = JSON.stringify(data.detail);
+                    }
+                  }
+                  throw new Error(errorMessage);
                 }
 
                 setPreferencesMessage({ type: "success", text: "Preferences saved successfully" });
@@ -540,7 +552,16 @@ function SettingsContent() {
 
                 if (!res.ok) {
                   const data = await res.json();
-                  throw new Error(data.detail || "Failed to change password");
+                  // Handle both string and array error formats from FastAPI
+                  let errorMessage = "Failed to change password";
+                  if (data.detail) {
+                    if (Array.isArray(data.detail)) {
+                      errorMessage = data.detail.map((e: { msg?: string; message?: string }) => e.msg || e.message || "Validation error").join(", ");
+                    } else if (typeof data.detail === "string") {
+                      errorMessage = data.detail;
+                    }
+                  }
+                  throw new Error(errorMessage);
                 }
 
                 setPasswordMessage({ type: "success", text: "Password changed successfully" });
