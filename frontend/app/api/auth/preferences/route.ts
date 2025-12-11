@@ -38,8 +38,12 @@ export async function PUT(request: Request) {
     });
     
     if (response.status >= 400) {
+      // Try to extract error detail from response
+      const errorDetail = response.data && typeof response.data === 'object' && 'detail' in response.data 
+        ? (response.data as { detail: string }).detail 
+        : "Failed to update preferences";
       return NextResponse.json(
-        { error: "Failed to update preferences" },
+        { detail: errorDetail },
         { status: response.status }
       );
     }
@@ -49,7 +53,7 @@ export async function PUT(request: Request) {
   } catch (error) {
     console.error("Failed to update preferences:", error);
     return NextResponse.json(
-      { error: "Failed to update preferences" },
+      { detail: error instanceof Error ? error.message : "Failed to update preferences" },
       { status: 500 }
     );
   }

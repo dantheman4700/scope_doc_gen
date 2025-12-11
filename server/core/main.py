@@ -708,6 +708,7 @@ class ScopeDocGenerator:
                     result = generate_scope_image(
                         solution_text=solution_text,
                         custom_prompt=image_prompt,
+                        size=image_resolution,
                     )
                     # Save image
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

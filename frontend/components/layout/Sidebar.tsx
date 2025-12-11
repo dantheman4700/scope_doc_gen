@@ -67,7 +67,7 @@ export function Sidebar({ user }: SidebarProps) {
       <div className="flex h-16 items-center justify-between border-b border-border px-4">
         {!collapsed && (
           <Link href="/projects" className="flex items-baseline gap-2">
-            <span className="text-lg font-semibold text-foreground">Scope Doc</span>
+            <span className="text-lg font-semibold text-foreground">ScopeGen</span>
             <span className="text-xs text-muted-foreground">v{APP_VERSION}</span>
           </Link>
         )}

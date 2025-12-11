@@ -7,8 +7,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarLayout } from "@/components/layout/SidebarLayout";
 
 export const metadata: Metadata = {
-  title: "Scope Doc Dashboard",
-  description: "Internal scope document management portal"
+  title: "ScopeGen",
+  description: "AI-powered scope document generation platform"
 };
 
 export default async function RootLayout({

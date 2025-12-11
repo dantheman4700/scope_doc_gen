@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { Save, Copy, X, Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface MarkdownEditorModalProps {
   isOpen: boolean;
@@ -9,40 +11,8 @@ interface MarkdownEditorModalProps {
   content: string;
   version: number;
   runId: string;
-  onSave: (content: string) => Promise<boolean>;
+  onSave: (content: string) => Promise<{ success: boolean; sub_version?: number; version?: number }>;
   onCopy: () => void;
-}
-
-// Simple markdown renderer that converts basic markdown to styled HTML
-function renderMarkdown(markdown: string): string {
-  let html = markdown
-    // Escape HTML
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    // Headers
-    .replace(/^### (.*)$/gm, '<h3 style="color:#10b981;margin:1em 0 0.5em;font-size:1.1em;">$1</h3>')
-    .replace(/^## (.*)$/gm, '<h2 style="color:#60a5fa;margin:1.2em 0 0.5em;font-size:1.3em;">$1</h2>')
-    .replace(/^# (.*)$/gm, '<h1 style="color:#a78bfa;margin:1.5em 0 0.5em;font-size:1.5em;">$1</h1>')
-    // Bold and italic
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f0f0f0;">$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Lists
-    .replace(/^- (.*)$/gm, '<li style="margin-left:1.5em;list-style:disc;">$1</li>')
-    .replace(/^\d+\. (.*)$/gm, '<li style="margin-left:1.5em;list-style:decimal;">$1</li>')
-    // Code blocks
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre style="background:#1e1e2e;padding:0.75em;border-radius:4px;overflow-x:auto;margin:0.5em 0;"><code>$2</code></pre>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code style="background:#1e1e2e;padding:0.15em 0.3em;border-radius:3px;font-size:0.9em;">$1</code>')
-    // Horizontal rules
-    .replace(/^---$/gm, '<hr style="border:none;border-top:1px solid #374151;margin:1em 0;"/>')
-    // Line breaks (double newline becomes paragraph break)
-    .replace(/\n\n/g, '</p><p style="margin:0.5em 0;">')
-    // Single newlines become <br>
-    .replace(/\n/g, '<br/>');
-  
-  return `<p style="margin:0.5em 0;">${html}</p>`;
 }
 
 export function MarkdownEditorModal({
@@ -57,35 +27,44 @@ export function MarkdownEditorModal({
   const [editedContent, setEditedContent] = useState(content);
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
-  const [renderedHtml, setRenderedHtml] = useState("");
+  const [currentSubVersion, setCurrentSubVersion] = useState<number>(0);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   // Sync content when prop changes
   useEffect(() => {
     setEditedContent(content);
     setHasChanges(false);
+    setCurrentSubVersion(0);
+    setSaveMessage(null);
   }, [content]);
-
-  // Render markdown whenever edited content changes
-  useEffect(() => {
-    setRenderedHtml(renderMarkdown(editedContent));
-  }, [editedContent]);
 
   const handleContentChange = useCallback((newContent: string) => {
     setEditedContent(newContent);
     setHasChanges(newContent !== content);
+    setSaveMessage(null);
   }, [content]);
 
   const handleSave = useCallback(async () => {
     if (!hasChanges) return;
     
     setIsSaving(true);
-    const success = await onSave(editedContent);
-    setIsSaving(false);
+    setSaveMessage(null);
     
-    if (success) {
-      setHasChanges(false);
+    try {
+      const result = await onSave(editedContent);
+      
+      if (result.success) {
+        const newSubVersion = result.sub_version ?? (currentSubVersion + 1);
+        setCurrentSubVersion(newSubVersion);
+        setHasChanges(false);
+        setSaveMessage(`Saved as v${version}.${newSubVersion}`);
+      }
+    } catch (err) {
+      setSaveMessage("Failed to save");
+    } finally {
+      setIsSaving(false);
     }
-  }, [editedContent, hasChanges, onSave]);
+  }, [editedContent, hasChanges, onSave, version, currentSubVersion]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -117,6 +96,14 @@ export function MarkdownEditorModal({
   }, [hasChanges, onClose]);
 
   if (!isOpen) return null;
+
+  // Calculate next version string
+  const nextSubVersion = currentSubVersion + 1;
+  const versionDisplay = hasChanges 
+    ? `v${version}.${nextSubVersion}` 
+    : currentSubVersion > 0 
+      ? `v${version}.${currentSubVersion}`
+      : `v${version}`;
 
   return (
     <div
@@ -150,11 +137,19 @@ export function MarkdownEditorModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
             <h2 style={{ margin: 0 }}>
-              Edit Markdown (v{version})
+              Edit Markdown ({versionDisplay})
             </h2>
             {hasChanges && (
               <span className="chip chip--warning" style={{ fontSize: "0.75rem" }}>
                 Unsaved changes
+              </span>
+            )}
+            {saveMessage && (
+              <span 
+                className={saveMessage.includes("Failed") ? "chip chip--failed" : "chip chip--success"} 
+                style={{ fontSize: "0.75rem" }}
+              >
+                {saveMessage}
               </span>
             )}
           </div>
@@ -168,7 +163,7 @@ export function MarkdownEditorModal({
               style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
             >
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save as v{version}.{Math.floor(Math.random() * 9) + 1}
+              Save as v{version}.{nextSubVersion}
             </button>
             
             {/* Copy button */}
@@ -228,7 +223,7 @@ export function MarkdownEditorModal({
                 letterSpacing: "0.05em",
               }}
             >
-              ✏️ Editor
+              Editor
             </div>
             <textarea
               value={editedContent}
@@ -274,9 +269,10 @@ export function MarkdownEditorModal({
                 letterSpacing: "0.05em",
               }}
             >
-              👁️ Preview
+              Preview
             </div>
             <div
+              className="markdown-preview"
               style={{
                 flex: 1,
                 overflow: "auto",
@@ -285,8 +281,11 @@ export function MarkdownEditorModal({
                 fontSize: "0.9rem",
                 lineHeight: 1.7,
               }}
-              dangerouslySetInnerHTML={{ __html: renderedHtml }}
-            />
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {editedContent}
+              </ReactMarkdown>
+            </div>
           </div>
         </div>
 
@@ -296,10 +295,54 @@ export function MarkdownEditorModal({
             Edit the markdown on the left. Preview updates in real-time on the right.
           </span>
           <span>
-            Press Ctrl/Cmd+S to save • Esc to close
+            Press Ctrl/Cmd+S to save | Esc to close
           </span>
         </div>
       </div>
+
+      {/* Markdown preview styles */}
+      <style jsx global>{`
+        .markdown-preview h1 { font-size: 1.5em; font-weight: 600; margin: 1em 0 0.5em; color: #a78bfa; }
+        .markdown-preview h2 { font-size: 1.3em; font-weight: 600; margin: 1em 0 0.5em; color: #60a5fa; }
+        .markdown-preview h3 { font-size: 1.1em; font-weight: 600; margin: 1em 0 0.5em; color: #10b981; }
+        .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { font-size: 1em; font-weight: 600; margin: 0.75em 0 0.5em; }
+        .markdown-preview p { margin: 0.5em 0; }
+        .markdown-preview ul, .markdown-preview ol { margin: 0.5em 0; padding-left: 1.5em; }
+        .markdown-preview li { margin: 0.25em 0; }
+        .markdown-preview strong { color: #f0f0f0; font-weight: 600; }
+        .markdown-preview em { font-style: italic; }
+        .markdown-preview code { 
+          background: #1e1e2e; 
+          padding: 0.15em 0.3em; 
+          border-radius: 3px; 
+          font-size: 0.9em; 
+          font-family: 'JetBrains Mono', monospace;
+        }
+        .markdown-preview pre { 
+          background: #1e1e2e; 
+          padding: 0.75em; 
+          border-radius: 4px; 
+          overflow-x: auto; 
+          margin: 0.5em 0;
+        }
+        .markdown-preview pre code { background: transparent; padding: 0; }
+        .markdown-preview blockquote { 
+          border-left: 3px solid #374151; 
+          padding-left: 1em; 
+          margin: 0.5em 0; 
+          color: #9ca3af;
+        }
+        .markdown-preview hr { border: none; border-top: 1px solid #374151; margin: 1em 0; }
+        .markdown-preview table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+        .markdown-preview th, .markdown-preview td { 
+          border: 1px solid #374151; 
+          padding: 0.5em; 
+          text-align: left;
+        }
+        .markdown-preview th { background: #1f2937; font-weight: 600; }
+        .markdown-preview a { color: #60a5fa; text-decoration: underline; }
+        .markdown-preview a:hover { color: #93c5fd; }
+      `}</style>
     </div>
   );
 }

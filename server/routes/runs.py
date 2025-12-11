@@ -111,6 +111,34 @@ def _storage_key(project_id: str, relative_path: str) -> str:
     return f"projects/{project_id}/{clean}"
 
 
+def _create_step(db: Session, run_id: UUID, name: str, status_str: str = "running") -> models.RunStep:
+    """Create a new step record for the given run."""
+    from uuid import uuid4
+    from datetime import datetime as dt
+    step = models.RunStep(
+        id=uuid4(),
+        run_id=run_id,
+        name=name,
+        status=status_str,
+        started_at=dt.utcnow(),
+    )
+    db.add(step)
+    db.commit()
+    db.refresh(step)
+    return step
+
+
+def _finish_step(db: Session, step: models.RunStep, status_str: str = "success", logs: str = None):
+    """Mark a step as finished."""
+    from datetime import datetime as dt
+    step.status = status_str
+    step.finished_at = dt.utcnow()
+    if logs:
+        step.logs = logs
+    db.add(step)
+    db.commit()
+
+
 async def _ensure_artifact_local(
     project_id: str,
     artifact: models.Artifact,
@@ -740,6 +768,8 @@ async def save_run_markdown(
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
 
+    # Create a step record for this edit
+    step = _create_step(db, run_id, f"Edit Markdown v{request.version}")
     # Get or create the version
     if request.version == 1:
         # For v1, we update the artifact directly
@@ -772,6 +802,7 @@ async def save_run_markdown(
         db.add(artifact)
         db.commit()
         
+        _finish_step(db, step, "success", f"Saved as v1.{edit_count}")
         return {
             "success": True,
             "version": 1,
@@ -802,6 +833,7 @@ async def save_run_markdown(
         db.add(run_version)
         db.commit()
         
+        _finish_step(db, step, "success", f"Saved as v{request.version}.{edit_count}")
         return {
             "success": True,
             "version": request.version,
@@ -1182,6 +1214,8 @@ async def export_run_google_doc(
     if run.status != "success":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before exporting")
 
+    # Create a step record for this export
+    step = _create_step(db, run_id, f"Export to Google Doc{' v' + str(version) if version else ''}")
     # Try to get content from a specific version if requested
     run_version = None
     content = None

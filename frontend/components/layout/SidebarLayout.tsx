@@ -15,12 +15,17 @@ interface SidebarLayoutProps {
 // Pages that should NOT show the sidebar
 const noSidebarPaths = ["/login", "/register"];
 
+// Pages that should show the right sidebar
+const rightSidebarPaths = ["/runs/", "/projects/"];
+
 export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   
   const showSidebar = !noSidebarPaths.includes(pathname);
+  const showRightSidebar = rightSidebarPaths.some(p => pathname.startsWith(p));
 
   useEffect(() => {
     setMounted(true);
@@ -28,11 +33,17 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
     if (saved === "true") {
       setSidebarCollapsed(true);
     }
+    const savedRight = localStorage.getItem("right-sidebar-collapsed");
+    if (savedRight === "true") {
+      setRightSidebarCollapsed(true);
+    }
     
     // Listen for localStorage changes
     const handleStorage = () => {
       const saved = localStorage.getItem("sidebar-collapsed");
       setSidebarCollapsed(saved === "true");
+      const savedRight = localStorage.getItem("right-sidebar-collapsed");
+      setRightSidebarCollapsed(savedRight === "true");
     };
     
     window.addEventListener("storage", handleStorage);
@@ -41,6 +52,8 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
     const handleCollapse = () => {
       const saved = localStorage.getItem("sidebar-collapsed");
       setSidebarCollapsed(saved === "true");
+      const savedRight = localStorage.getItem("right-sidebar-collapsed");
+      setRightSidebarCollapsed(savedRight === "true");
     };
     window.addEventListener("sidebar-collapse-change", handleCollapse);
     
@@ -48,6 +61,8 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
     const interval = setInterval(() => {
       const saved = localStorage.getItem("sidebar-collapsed");
       setSidebarCollapsed(saved === "true");
+      const savedRight = localStorage.getItem("right-sidebar-collapsed");
+      setRightSidebarCollapsed(savedRight === "true");
     }, 100);
     
     return () => {
@@ -66,8 +81,9 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
       <Sidebar user={user} />
       <main
         className={cn(
-          "flex-1 transition-all duration-300",
-          mounted && sidebarCollapsed ? "ml-16" : "ml-64"
+          "flex-1 transition-all duration-300 p-6",
+          mounted && sidebarCollapsed ? "ml-16" : "ml-64",
+          showRightSidebar && (mounted && rightSidebarCollapsed ? "mr-10" : "mr-52")
         )}
       >
         {children}

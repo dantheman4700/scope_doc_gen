@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVersion } from "@/types/backend";
 import { useToast } from "@/components/ui/use-toast";
 import { QuestionsSection } from "./QuestionsSection";
 import { MarkdownEditorModal } from "./MarkdownEditorModal";
-import { TableOfContents } from "./TableOfContents";
+import { RightSidebar } from "./layout/RightSidebar";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -410,6 +410,24 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   };
 
+  // Reusable function to fetch versions
+  const fetchVersions = useCallback(async () => {
+    setIsLoadingVersions(true);
+    try {
+      const res = await fetch(`/api/runs/${runId}/versions`);
+      if (res.ok) {
+        const data: RunVersion[] = await res.json();
+        setVersions(data);
+        return data;
+      }
+    } catch {
+      // Ignore errors
+    } finally {
+      setIsLoadingVersions(false);
+    }
+    return [];
+  }, [runId]);
+
   // Fetch versions when run is successful and set default to latest
   useEffect(() => {
     if (run.status.toLowerCase() !== "success") return;
@@ -656,42 +674,95 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     };
   }, [run.project_id, includedFileIdSet]);
 
-  // Derive a title from the instructions or template type
+  // Derive a title from the instructions, markdown content, or template type
   const runTitle = useMemo(() => {
+    // First, try to extract from the markdown content (most accurate - actual document title)
+    if (markdownContent) {
+      // Look for H1 heading at the start
+      const h1Match = markdownContent.match(/^#\s+(.+?)(?:\n|$)/m);
+      if (h1Match) {
+        const title = h1Match[1].trim();
+        if (title.length > 0 && title.length < 60) {
+          return title;
+        }
+      }
+      
+      // Look for "Document Title:" or "Title:" in the markdown
+      const titleMatch = markdownContent.match(/(?:document\s+)?title[:\s]+(.+?)(?:\n|$)/i);
+      if (titleMatch) {
+        const title = titleMatch[1].trim();
+        if (title.length > 0 && title.length < 60) {
+          return title;
+        }
+      }
+      
+      // Look for "Client:" or "Project:" to build a title
+      const clientMatch = markdownContent.match(/client[:\s]+(.+?)(?:\n|$)/i);
+      const projectMatch = markdownContent.match(/project[:\s]+(.+?)(?:\n|$)/i);
+      if (clientMatch || projectMatch) {
+        const client = clientMatch?.[1]?.trim();
+        const project = projectMatch?.[1]?.trim();
+        if (client && project) {
+          return `${client} - ${project}`.slice(0, 50);
+        } else if (client) {
+          return client.slice(0, 50);
+        } else if (project) {
+          return project.slice(0, 50);
+        }
+      }
+    }
+    
+    // Then try instructions
     if (run.instructions) {
       // Check for focus instruction pattern like "We will focus on: XYZ"
       const focusMatch = run.instructions.match(/(?:focus on|focusing on)[:\s]+(.+?)(?:\s+for\s+the|$)/i);
       if (focusMatch) {
-        return focusMatch[1].trim();
+        return focusMatch[1].trim().slice(0, 50);
       }
       
       // Check for "XYZ For the current" pattern
       const forCurrentMatch = run.instructions.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
       if (forCurrentMatch) {
-        return forCurrentMatch[1].trim();
+        return forCurrentMatch[1].trim().slice(0, 50);
       }
       
-      // If instructions is short enough (< 60 chars), use it as the title
+      // Check for "Create XYZ" or "Generate XYZ" pattern
+      const createMatch = run.instructions.match(/(?:create|generate|build|make)\s+(?:a\s+)?(.+?)(?:\s+for|\s+based|$)/i);
+      if (createMatch) {
+        return createMatch[1].trim().slice(0, 50);
+      }
+      
+      // If instructions is short enough (< 50 chars), use it as the title
       const trimmedInstructions = run.instructions.trim();
-      if (trimmedInstructions.length > 0 && trimmedInstructions.length < 60) {
+      if (trimmedInstructions.length > 0 && trimmedInstructions.length < 50) {
         return trimmedInstructions;
       }
       
-      // Use first sentence or first 50 chars
+      // Use first sentence
       const firstSentence = trimmedInstructions.split(/[.!?\n]/)[0];
-      if (firstSentence && firstSentence.length > 0 && firstSentence.length < 80) {
+      if (firstSentence && firstSentence.length > 0 && firstSentence.length < 60) {
         return firstSentence.trim();
       }
     }
     
-    // Fall back to template type or null
-    return run.template_type ? `${run.template_type} Document` : null;
-  }, [run.instructions, run.template_type]);
+    // Fall back to template type with better formatting
+    if (run.template_type) {
+      const templateLabels: Record<string, string> = {
+        "scope": "Scope Document",
+        "pso": "PSO Document",
+        "Scope": "Scope Document",
+        "PSO": "PSO Document",
+      };
+      return templateLabels[run.template_type] || `${run.template_type} Document`;
+    }
+    
+    return null;
+  }, [run.instructions, run.template_type, markdownContent]);
 
   return (
     <div className="run-tracker flex flex-col gap-6">
       {/* Floating Table of Contents */}
-      <TableOfContents
+      <RightSidebar
         sections={[
           { id: "run-header", title: "Run Details", level: 1 },
           ...(solutionGraphicUrl ? [{ id: "solution-graphic", title: "Solution Graphic", level: 1 }] : []),
@@ -852,33 +923,75 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           </button>
 
           {/* Check for Ambiguity */}
-          <button
-            className="btn-secondary"
-            type="button"
-            onClick={async () => {
-              setIsCheckingAmbiguity(true);
-              try {
-                const response = await fetch(`/api/runs/${run.id}/check-ambiguity`, {
-                  method: "POST",
-                });
-                if (!response.ok) {
-                  throw new Error("Failed to check ambiguity");
+          <div style={{ display: "flex", gap: "0.25rem" }}>
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={async () => {
+                // If we already have results, just show the modal
+                if (ambiguityResult && !isCheckingAmbiguity) {
+                  setShowAmbiguityModal(true);
+                  return;
                 }
-                const result = await response.json();
-                setAmbiguityResult(result);
-                setShowAmbiguityModal(true);
-              } catch (err) {
-                showError("Failed to analyze document for ambiguities");
-              } finally {
-                setIsCheckingAmbiguity(false);
-              }
-            }}
-            disabled={!canExport || isCheckingAmbiguity}
-            title="Analyze document for ambiguous statements that could lead to scope creep"
-            style={{ fontSize: "0.875rem" }}
-          >
-            {isCheckingAmbiguity ? "🔍 Analyzing…" : "🔍 Check Ambiguity"}
-          </button>
+                
+                setIsCheckingAmbiguity(true);
+                try {
+                  const response = await fetch(`/api/runs/${run.id}/check-ambiguity`, {
+                    method: "POST",
+                  });
+                  if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    throw new Error(errData.detail || "Failed to check ambiguity");
+                  }
+                  const result = await response.json();
+                  console.log("Ambiguity check result:", result);
+                  setAmbiguityResult(result);
+                  setShowAmbiguityModal(true);
+                  showSuccess("Ambiguity analysis complete");
+                } catch (err) {
+                  console.error("Ambiguity check error:", err);
+                  showError(err instanceof Error ? err.message : "Failed to analyze document for ambiguities");
+                } finally {
+                  setIsCheckingAmbiguity(false);
+                }
+              }}
+              disabled={!canExport || isCheckingAmbiguity}
+              title={ambiguityResult ? "View ambiguity analysis results" : "Analyze document for ambiguous statements that could lead to scope creep"}
+              style={{ fontSize: "0.875rem" }}
+            >
+              {isCheckingAmbiguity ? "🔍 Analyzing…" : ambiguityResult ? "🔍 View Ambiguity" : "🔍 Check Ambiguity"}
+            </button>
+            {ambiguityResult && (
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={async () => {
+                  setAmbiguityResult(null);
+                  setIsCheckingAmbiguity(true);
+                  try {
+                    const response = await fetch(`/api/runs/${run.id}/check-ambiguity`, {
+                      method: "POST",
+                    });
+                    if (!response.ok) {
+                      throw new Error("Failed to re-check ambiguity");
+                    }
+                    const result = await response.json();
+                    setAmbiguityResult(result);
+                    setShowAmbiguityModal(true);
+                  } catch (err) {
+                    showError("Failed to re-analyze document for ambiguities");
+                  } finally {
+                    setIsCheckingAmbiguity(false);
+                  }
+                }}
+                disabled={!canExport || isCheckingAmbiguity}
+                title="Run ambiguity analysis again"
+                style={{ padding: "0.5rem", fontSize: "0.75rem" }}
+              >
+                🔄
+              </button>
+            )}
+          </div>
 
           {/* Refresh */}
           <button 
@@ -1394,11 +1507,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             left: 0,
             right: 0,
             bottom: 0,
-            background: "rgba(0, 0, 0, 0.7)",
+            background: "rgba(0, 0, 0, 0.8)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            zIndex: 1000,
+            zIndex: 9999,
           }}
           onClick={() => setShowAmbiguityModal(false)}
         >
@@ -1503,11 +1616,17 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }
               const result = await response.json();
               setMarkdownContent(newContent);
-              showSuccess(result.message || "Saved successfully");
-              return true;
+              showSuccess(result.message || `Saved as v${result.version}.${result.sub_version}`);
+              // Refresh versions list to include the edit
+              fetchVersions();
+              return { 
+                success: true, 
+                sub_version: result.sub_version,
+                version: result.version 
+              };
             } catch (err) {
               showError("Failed to save markdown");
-              return false;
+              return { success: false };
             }
           }}
           onCopy={handleCopyMarkdown}
