@@ -172,29 +172,39 @@ class JobRegistry:
 
     def _apply_team_settings(self, options: RunOptions, settings: dict) -> RunOptions:
         """Apply team-level defaults to run options."""
-        # Apply image generation settings
-        if settings.get("enable_solution_image") and not options.enable_image_generation:
-            options.enable_image_generation = settings.get("enable_solution_image", False)
-        # Apply image_prompt if not already explicitly set (None or empty string)
-        if settings.get("image_prompt") and not options.image_prompt:
-            options.image_prompt = settings.get("image_prompt")
-            LOGGER.info(f"Applied team image_prompt: {options.image_prompt[:50]}..." if len(options.image_prompt or "") > 50 else f"Applied team image_prompt: {options.image_prompt}")
+        # Determine if this is a PSO run based on template_type
+        is_pso = options.template_type and "pso" in options.template_type.lower()
+        
+        # Apply image generation settings based on document type
+        if is_pso:
+            if settings.get("enable_pso_image") and not options.enable_image_generation:
+                options.enable_image_generation = True
+            # Use PSO image prompt if available, fall back to general image_prompt
+            pso_prompt = settings.get("pso_image_prompt")
+            if pso_prompt and not options.image_prompt:
+                options.image_prompt = pso_prompt
+                LOGGER.info(f"Applied PSO image_prompt: {options.image_prompt[:80]}..." if len(options.image_prompt or "") > 80 else f"Applied PSO image_prompt: {options.image_prompt}")
+        else:
+            if settings.get("enable_solution_image") and not options.enable_image_generation:
+                options.enable_image_generation = True
+            # Use scope image prompt
+            scope_prompt = settings.get("image_prompt")
+            if scope_prompt and not options.image_prompt:
+                options.image_prompt = scope_prompt
+                LOGGER.info(f"Applied Scope image_prompt: {options.image_prompt[:80]}..." if len(options.image_prompt or "") > 80 else f"Applied Scope image_prompt: {options.image_prompt}")
+        
         if settings.get("image_resolution"):
             options.image_resolution = settings.get("image_resolution", "4K")
         if settings.get("image_aspect_ratio"):
             options.image_aspect_ratio = settings.get("image_aspect_ratio", "auto")
         
-        LOGGER.info(f"Applied team settings: enable_image={options.enable_image_generation}, resolution={options.image_resolution}")
+        LOGGER.info(f"Applied team settings: is_pso={is_pso}, enable_image={options.enable_image_generation}, resolution={options.image_resolution}, has_prompt={bool(options.image_prompt)}")
         return options
 
     def create_job(self, project_id: str, options: RunOptions) -> JobStatus:
-        # Load and apply team settings
-        team_settings = self._load_team_settings(project_id)
-        if team_settings:
-            options = self._apply_team_settings(options, team_settings)
-
         job_id = uuid4()
-        # Determine template_type based on run_mode (default to "Scope" for oneshot)
+        
+        # Determine template_type FIRST based on run_mode (default to "Scope" for oneshot)
         template_type = options.template_type
         if not template_type:
             if options.run_mode == "oneshot":
@@ -203,6 +213,14 @@ class JobRegistry:
                 template_type = "Full"
             else:
                 template_type = options.run_mode.capitalize()
+        
+        # Set template_type on options before applying team settings
+        options.template_type = template_type
+        
+        # Load and apply team settings AFTER template_type is determined
+        team_settings = self._load_team_settings(project_id)
+        if team_settings:
+            options = self._apply_team_settings(options, team_settings)
         
         job = JobStatus(
             id=job_id,

@@ -24,6 +24,10 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
+.venv.3.8.bak/
+.venv/*
+.venv.3.8.bak/*
 
 # Environment variables
 .env

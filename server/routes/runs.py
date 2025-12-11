@@ -682,11 +682,38 @@ async def check_run_ambiguity(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
 
+    # Create a step record for the ambiguity check
+    from uuid import uuid4
+    from datetime import datetime as dt
+    step_id = uuid4()
+    step = models.RunStep(
+        id=step_id,
+        run_id=run_id,
+        name="Check Ambiguity",
+        status="running",
+        started_at=dt.utcnow(),
+    )
+    db.add(step)
+    db.commit()
+
     # Analyze for ambiguity using Claude
     try:
         extractor = ClaudeExtractor()
         result = extractor.check_ambiguity(scope_markdown=scope_markdown)
+        
+        # Mark step as success
+        step.status = "success"
+        step.finished_at = dt.utcnow()
+        db.add(step)
+        db.commit()
     except Exception as exc:
+        # Mark step as failed
+        step.status = "failed"
+        step.finished_at = dt.utcnow()
+        step.logs = str(exc)
+        db.add(step)
+        db.commit()
+        
         logger.exception("Failed to check ambiguity")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to analyze document: {exc}")
 
@@ -953,6 +980,138 @@ async def get_solution_graphic(
     mime_type = artifact.meta.get("type", "image/png")
     
     return StreamingResponse(io.BytesIO(data), media_type=mime_type)
+
+
+class RegenerateGraphicRequest(BaseModel):
+    additional_prompt: Optional[str] = None
+
+
+@run_router.post("/{run_id}/regenerate-graphic")
+async def regenerate_solution_graphic(
+    run_id: UUID,
+    request: RegenerateGraphicRequest,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """Regenerate the solution graphic for a run with optional additional prompt."""
+    from server.core.image_gen import generate_scope_image, ImageGenError
+    from datetime import datetime as dt
+    from uuid import uuid4
+    
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful")
+
+    # Get the rendered doc artifact to extract solution text
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    # Read markdown and extract proposed solution
+    try:
+        markdown_content = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read document: {exc}")
+
+    # Extract proposed solution section
+    solution_text = ""
+    in_solution = False
+    for line in markdown_content.split("\n"):
+        if "## Proposed Solution" in line or "## Solution Overview" in line:
+            in_solution = True
+            continue
+        elif in_solution and line.startswith("## "):
+            break
+        elif in_solution:
+            solution_text += line + "\n"
+    
+    if not solution_text.strip():
+        # Fallback - use first 2000 chars of document
+        solution_text = markdown_content[:2000]
+
+    # Get team settings for base prompt
+    base_prompt = None
+    try:
+        project = db.query(models.Project).filter_by(id=run.project_id).first()
+        if project and project.team_id:
+            team = db.query(models.Team).filter_by(id=project.team_id).first()
+            if team and team.settings:
+                # Use PSO or scope prompt based on template type
+                if run.template_type and "pso" in run.template_type.lower():
+                    base_prompt = team.settings.get("pso_image_prompt")
+                else:
+                    base_prompt = team.settings.get("image_prompt")
+    except Exception as e:
+        logger.warning(f"Failed to load team settings for graphic regen: {e}")
+
+    # Combine prompts
+    custom_prompt = base_prompt or ""
+    if request.additional_prompt:
+        custom_prompt = f"{custom_prompt}\n\nAdditional instructions: {request.additional_prompt}".strip()
+
+    # Generate the image
+    try:
+        result = generate_scope_image(
+            solution_text=solution_text[:2000],
+            custom_prompt=custom_prompt if custom_prompt else None,
+        )
+    except ImageGenError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Image generation failed: {exc}")
+    except Exception as exc:
+        logger.exception("Unexpected error during graphic regeneration")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unexpected error: {exc}")
+
+    # Save the new image
+    project_runs_dir = Path(f"projects/{project_id_str}/runs/{run_id}")
+    project_runs_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    ext = "png" if "png" in result.mime_type else "jpg"
+    image_filename = f"solution_graphic_{timestamp}.{ext}"
+    image_path = project_runs_dir / image_filename
+    
+    with open(image_path, "wb") as f:
+        f.write(result.image_data)
+
+    # Update or create artifact
+    existing_artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "solution_graphic")
+        .first()
+    )
+    
+    if existing_artifact:
+        existing_artifact.path = str(image_path)
+        existing_artifact.meta = {"type": result.mime_type}
+        db.add(existing_artifact)
+    else:
+        new_artifact = models.Artifact(
+            id=uuid4(),
+            run_id=run_id,
+            kind="solution_graphic",
+            path=str(image_path),
+            meta={"type": result.mime_type},
+        )
+        db.add(new_artifact)
+    
+    db.commit()
+
+    return StreamingResponse(io.BytesIO(result.image_data), media_type=result.mime_type)
 
 
 @run_router.post("/{run_id}/export-google-doc")

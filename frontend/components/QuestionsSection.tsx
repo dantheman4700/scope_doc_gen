@@ -17,6 +17,8 @@ interface QuestionsSectionProps {
   onAnswerChange: (questionIndex: number, answer: string) => void;
   onGenerateMore?: () => Promise<void>;
   isGeneratingMore?: boolean;
+  isGeneratingQuestions?: boolean; // True when initial question generation is in progress
+  onLockChange?: (locked: boolean) => void; // Callback when lock state changes
   disabled?: boolean;
 }
 
@@ -75,9 +77,11 @@ function QuestionItem({
 
         {/* Question text */}
         <div className="flex-1 min-w-0">
-          <p className={`text-sm font-medium ${isChecked ? "line-through text-muted-foreground" : "text-foreground"}`}>
+          <p className={`text-sm font-medium leading-snug ${isChecked ? "line-through text-muted-foreground" : "text-foreground"}`}>
             <span className="text-muted-foreground mr-2">Q{index + 1}.</span>
-            {question}
+            {isExpanded || question.length <= 120 
+              ? question 
+              : `${question.slice(0, 120)}…`}
           </p>
           {isChecked && answer && (
             <p className="text-xs text-muted-foreground mt-1 truncate">
@@ -129,11 +133,13 @@ export function QuestionsSection({
   onAnswerChange,
   onGenerateMore,
   isGeneratingMore,
+  isGeneratingQuestions,
+  onLockChange,
   disabled,
 }: QuestionsSectionProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false); // Collapsed by default
   const [isLockedIn, setIsLockedIn] = useState(false);
-  const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set([0])); // First question expanded by default
+  const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set()); // All collapsed by default
   const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(new Set());
 
   // Sort questions: unchecked first, then checked
@@ -185,16 +191,33 @@ export function QuestionsSection({
     // (In a real implementation, you might want to persist this)
     setIsLockedIn(true);
     setIsExpanded(false);
-  }, []);
+    onLockChange?.(true);
+  }, [onLockChange]);
 
   const handleUnlock = useCallback(() => {
     setIsLockedIn(false);
     setIsExpanded(true);
-  }, []);
+    onLockChange?.(false);
+  }, [onLockChange]);
 
   const unansweredCount = questions.filter((_, i) => !checkedQuestions.has(i)).length;
   const answeredCount = checkedQuestions.size;
 
+  // Show generating indicator when no questions yet but generation is in progress
+  if (questions.length === 0 && isGeneratingQuestions) {
+    return (
+      <div className="border border-border rounded-lg overflow-hidden">
+        <div className="flex items-center gap-3 p-4 bg-muted/30">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          <div>
+            <h3 className="font-semibold text-foreground">{title}</h3>
+            <p className="text-sm text-muted-foreground">Generating questions...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
   if (questions.length === 0) {
     return null;
   }

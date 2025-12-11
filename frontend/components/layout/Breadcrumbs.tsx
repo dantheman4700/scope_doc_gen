@@ -139,21 +139,25 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
     if (runTitle) return runTitle;
     if (!currentRun) return null;
     
-    // Check for focus instruction pattern
-    const focusMatch = currentRun.instructions?.match(/(?:focus on|focusing on)[:\s]+(.+?)(?:\s+for\s+the|$)/i);
+    const instr = currentRun.instructions || "";
+    
+    // Check for focus instruction pattern: "focus on XYZ" or "focusing on XYZ"
+    const focusMatch = instr.match(/(?:focus(?:ing)?\s+on)[:\s]+([^.]+)/i);
     if (focusMatch) {
-      return focusMatch[1].trim().slice(0, 40);
+      const t = focusMatch[1].replace(/\s+for\s+the.*$/i, "").trim();
+      return t.slice(0, 45) + (t.length > 45 ? "…" : "");
     }
     
-    // Check for "XYZ For the current" pattern
-    const forCurrentMatch = currentRun.instructions?.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
-    if (forCurrentMatch) {
-      return forCurrentMatch[1].trim().slice(0, 40);
+    // Check for "XYZ for the current project" pattern
+    const forMatch = instr.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
+    if (forMatch) {
+      const t = forMatch[1].trim();
+      return t.slice(0, 45) + (t.length > 45 ? "…" : "");
     }
     
-    // Use short instructions if available
-    if (currentRun.instructions && currentRun.instructions.length < 50) {
-      return currentRun.instructions;
+    // Use short instructions if meaningful
+    if (instr.length > 5 && instr.length < 50) {
+      return instr;
     }
     
     // Fall back to template type
@@ -176,7 +180,7 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
     const isRunPage = pathname.startsWith("/runs/");
     const isProjectPage = pathname.startsWith("/projects/");
     
-    if (isRunPage && currentProject && currentRun) {
+    if (isRunPage) {
       // Run page: Projects > ProjectName > RunTitle
       crumbs.push({
         label: "Projects",
@@ -184,15 +188,27 @@ export function Breadcrumbs({ items, className = "", projectId, projectName, run
         hasDropdown: true,
         dropdownType: "projects",
       });
+      
+      // Show project name or loading placeholder
+      if (currentProject) {
+        crumbs.push({
+          label: currentProject.name,
+          href: `/projects/${currentProject.id}`,
+          hasDropdown: true,
+          dropdownType: "project-nav",
+        });
+      } else {
+        // Show loading state while fetching project
+        crumbs.push({
+          label: "Loading…",
+          hasDropdown: false,
+        });
+      }
+      
+      // Show run title with dropdown for switching runs
       crumbs.push({
-        label: currentProject.name,
-        href: `/projects/${currentProject.id}`,
-        hasDropdown: true,
-        dropdownType: "project-nav",
-      });
-      crumbs.push({
-        label: derivedRunTitle || "Run",
-        hasDropdown: runs.length > 1,
+        label: derivedRunTitle || (currentRun ? `${currentRun.template_type || "Run"}` : "Run"),
+        hasDropdown: runs.length > 0,
         dropdownType: "runs",
       });
     } else if (isProjectPage) {

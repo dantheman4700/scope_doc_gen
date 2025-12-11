@@ -8,6 +8,7 @@ import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVe
 import { useToast } from "@/components/ui/use-toast";
 import { QuestionsSection } from "./QuestionsSection";
 import { MarkdownEditorModal } from "./MarkdownEditorModal";
+import { TableOfContents } from "./TableOfContents";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -16,6 +17,34 @@ interface RunStatusTrackerProps {
 }
 
 const TERMINAL_STATUSES = new Set(["success", "failed"]);
+
+// Normalize step names to Title Case With Spaces
+const STEP_NAME_MAP: Record<string, string> = {
+  "sync inputs": "Sync Inputs",
+  "sync_inputs": "Sync Inputs",
+  "ingest": "Ingest",
+  "template": "Template",
+  "prepare_context": "Prepare Context",
+  "research": "Research",
+  "vector_search": "Vector Search",
+  "extract": "Extract",
+  "image_gen": "Image Generation",
+  "render": "Render",
+  "generate questions": "Generate Questions",
+  "regenerate": "Regenerate",
+  "check ambiguity": "Check Ambiguity",
+};
+
+function formatStepName(name: string): string {
+  const normalized = name.toLowerCase();
+  if (STEP_NAME_MAP[normalized]) {
+    return STEP_NAME_MAP[normalized];
+  }
+  // If not in map, convert to Title Case With Spaces
+  return name
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusTrackerProps) {
   const router = useRouter();
@@ -53,6 +82,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [showQuickRegen, setShowQuickRegen] = useState<boolean>(false);
   const [expertAnswers, setExpertAnswers] = useState<Record<number, string>>({});
   const [clientAnswers, setClientAnswers] = useState<Record<number, string>>({});
+  const [expertLocked, setExpertLocked] = useState<boolean>(false);
+  const [clientLocked, setClientLocked] = useState<boolean>(false);
   const [isSubmittingQuickRegen, setIsSubmittingQuickRegen] = useState<boolean>(false);
   const [quickRegenText, setQuickRegenText] = useState<string>("");
   const [regenJobId, setRegenJobId] = useState<string | null>(null);
@@ -73,6 +104,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [regenGraphic, setRegenGraphic] = useState<boolean>(false);
   const [extraResearch, setExtraResearch] = useState<boolean>(false);
   const [researchProvider, setResearchProvider] = useState<"claude" | "perplexity">("claude");
+  const [isRegenningGraphic, setIsRegenningGraphic] = useState<boolean>(false);
+  const [graphicPromptInput, setGraphicPromptInput] = useState<string>("");
+  const [showGraphicPrompt, setShowGraphicPrompt] = useState<boolean>(false);
   // Included files do not change after run creation, so load once and never re-render them on poll
   const [includedFiles, setIncludedFiles] = useState<ProjectFile[]>([]);
   const [isLoadingIncludedFiles, setIsLoadingIncludedFiles] = useState<boolean>(false);
@@ -80,6 +114,12 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
 
   // Recompute included IDs when run changes
   const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
+  
+  // Check if questions are currently being generated
+  const isQuestionsStepRunning = useMemo(() => {
+    const questionsStep = steps.find(s => s.name.toLowerCase().includes("question"));
+    return questionsStep?.status === "running";
+  }, [steps]);
 
   useEffect(() => {
     if (!isPolling) return;
@@ -104,7 +144,11 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         setError(null);
 
         const statusLower = runData.status.toLowerCase();
-        if (TERMINAL_STATUSES.has(statusLower)) {
+        // Check if Generate Questions step is still running
+        const questionsStep = stepsData.find(s => s.name.toLowerCase().includes("question"));
+        const questionsStillRunning = questionsStep?.status === "running";
+        
+        if (TERMINAL_STATUSES.has(statusLower) && !questionsStillRunning) {
           setIsPolling(false);
         }
       } catch (err) {
@@ -255,6 +299,20 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       const docUrl = payload.doc_url;
       if (docUrl) {
         setExistingGoogleDocUrl(docUrl);
+        
+        // Also update the run/versions state so the URL persists across component updates
+        if (selectedVersion === 1 || !selectedVersion) {
+          // Update run state with new google_doc_url
+          setRun(prev => ({ ...prev, google_doc_url: docUrl, google_doc_id: payload.doc_id }));
+        } else {
+          // Update the version in versions array
+          setVersions(prev => prev.map(v => 
+            v.version_number === selectedVersion 
+              ? { ...v, google_doc_url: docUrl, google_doc_id: payload.doc_id }
+              : v
+          ));
+        }
+        
         window.open(docUrl, "_blank", "noopener,noreferrer");
         const versionInfo = payload.version ? ` (v${payload.version})` : "";
         showSuccess(payload.status === "existing" ? `Opened Google Doc${versionInfo}` : `Created new Google Doc${versionInfo}`);
@@ -632,7 +690,21 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
 
   return (
     <div className="run-tracker flex flex-col gap-6">
-      <section className="card">
+      {/* Floating Table of Contents */}
+      <TableOfContents
+        sections={[
+          { id: "run-header", title: "Run Details", level: 1 },
+          ...(solutionGraphicUrl ? [{ id: "solution-graphic", title: "Solution Graphic", level: 1 }] : []),
+          { id: "ai-feedback", title: "AI Feedback", level: 1 },
+          { id: "clarifying-questions", title: "Clarifying Questions", level: 1 },
+          ...(questions && (questions.questions_for_expert?.length || questions.questions_for_client?.length) 
+            ? [{ id: "regenerate", title: "Regenerate", level: 1 }] : []),
+          { id: "included-files", title: "Included Files", level: 1 },
+          { id: "steps", title: "Steps", level: 1 },
+        ]}
+      />
+      
+      <section id="run-header" className="card">
         {/* Header row with title and status */}
         <div className="flex flex-col gap-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -693,15 +765,18 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               >
                 {/* Always show v1 (Original) */}
                 <option value={1}>v1 (Original)</option>
-                {/* Show additional versions from API */}
+                {/* Show additional versions from API - including sub-versions like 1.1, 1.2 */}
                 {versions
-                  .filter(v => v.version_number > 1)
+                  .filter(v => v.version_number !== 1)
                   .sort((a, b) => a.version_number - b.version_number)
-                  .map((v) => (
-                    <option key={v.version_number} value={v.version_number}>
-                      v{v.version_number}
-                    </option>
-                  ))}
+                  .map((v) => {
+                    const isSubVersion = v.version_number % 1 !== 0;
+                    return (
+                      <option key={v.version_number} value={v.version_number}>
+                        v{v.version_number}{isSubVersion ? " (edit)" : ""}
+                      </option>
+                    );
+                  })}
               </select>
             </div>
           )}
@@ -823,10 +898,18 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
 
       {/* Solution Graphic */}
       {solutionGraphicUrl && (
-        <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <section id="solution-graphic" className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
             <h2 style={{ margin: 0 }}>Solution Graphic</h2>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => setShowGraphicPrompt(!showGraphicPrompt)}
+                disabled={isRegenningGraphic}
+              >
+                {isRegenningGraphic ? "⏳ Regenerating…" : "🔄 Regenerate"}
+              </button>
               <button
                 className="btn-secondary"
                 type="button"
@@ -847,6 +930,74 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               </a>
             </div>
           </div>
+          
+          {/* Optional prompt input for regeneration */}
+          {showGraphicPrompt && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", padding: "0.75rem", background: "#1f2937", borderRadius: "0.375rem" }}>
+              <label style={{ fontSize: "0.875rem", color: "#9ca3af" }}>
+                Additional prompt (optional - uses team settings as base):
+              </label>
+              <textarea
+                value={graphicPromptInput}
+                onChange={(e) => setGraphicPromptInput(e.target.value)}
+                placeholder="E.g., Focus on the cloud architecture, show microservices..."
+                style={{
+                  padding: "0.5rem",
+                  borderRadius: "0.375rem",
+                  border: "1px solid #374151",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  fontSize: "0.875rem",
+                  resize: "vertical",
+                  minHeight: "60px",
+                }}
+              />
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button
+                  className="btn-primary"
+                  type="button"
+                  onClick={async () => {
+                    setIsRegenningGraphic(true);
+                    try {
+                      const response = await fetch(`/api/runs/${runId}/regenerate-graphic`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ additional_prompt: graphicPromptInput }),
+                      });
+                      if (!response.ok) {
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.detail || "Failed to regenerate graphic");
+                      }
+                      const blob = await response.blob();
+                      if (blob.size > 0) {
+                        setSolutionGraphicUrl(URL.createObjectURL(blob));
+                        showSuccess("Graphic regenerated successfully");
+                      }
+                      setShowGraphicPrompt(false);
+                      setGraphicPromptInput("");
+                    } catch (err) {
+                      showError(err instanceof Error ? err.message : "Failed to regenerate graphic");
+                    } finally {
+                      setIsRegenningGraphic(false);
+                    }
+                  }}
+                  disabled={isRegenningGraphic}
+                >
+                  {isRegenningGraphic ? "Generating…" : "Generate"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => {
+                    setShowGraphicPrompt(false);
+                    setGraphicPromptInput("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           <div style={{ 
             display: "block",
             padding: "0", 
@@ -930,7 +1081,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         </section>
       )}
 
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      <section id="ai-feedback" className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
         <h2 style={{ margin: 0 }}>AI Feedback</h2>
         {feedback ? (
           <div className="feedback-grid" style={{ display: "grid", gap: "0.75rem" }}>
@@ -945,7 +1096,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       </section>
 
       {/* Questions Sections - Redesigned */}
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <section id="clarifying-questions" className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0 }}>Clarifying Questions</h2>
           {canExport && !questions && (
@@ -968,6 +1119,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               questions={questions.questions_for_expert || []}
               answers={expertAnswers}
               onAnswerChange={(idx, answer) => setExpertAnswers((prev) => ({ ...prev, [idx]: answer }))}
+              isGeneratingQuestions={isQuestionsStepRunning}
               onGenerateMore={async () => {
                 setIsGeneratingMoreExpert(true);
                 try {
@@ -1002,6 +1154,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                 }
               }}
               isGeneratingMore={isGeneratingMoreExpert}
+              onLockChange={(locked) => setExpertLocked(locked)}
             />
             
             <QuestionsSection
@@ -1010,6 +1163,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               questions={questions.questions_for_client || []}
               answers={clientAnswers}
               onAnswerChange={(idx, answer) => setClientAnswers((prev) => ({ ...prev, [idx]: answer }))}
+              isGeneratingQuestions={isQuestionsStepRunning}
               onGenerateMore={async () => {
                 setIsGeneratingMoreClient(true);
                 try {
@@ -1044,6 +1198,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                 }
               }}
               isGeneratingMore={isGeneratingMoreClient}
+              onLockChange={(locked) => setClientLocked(locked)}
             />
           </div>
         ) : (
@@ -1051,13 +1206,32 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         )}
       </section>
 
-      {/* Quick Regen with Answers Button */}
+      {/* Regenerate Section */}
       {questions && (questions.questions_for_expert?.length || questions.questions_for_client?.length) && (
-        <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <h2 style={{ margin: 0 }}>Regenerate with Answers</h2>
+        <section id="regenerate" className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <h2 style={{ margin: 0 }}>Regenerate</h2>
           <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
             Create a new version of the scope using the answers you provided above.
           </p>
+          
+          {/* Show lock status indicator */}
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            {expertLocked && (
+              <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.875rem", color: "#10b981" }}>
+                ✓ Expert answers locked in
+              </span>
+            )}
+            {clientLocked && (
+              <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.875rem", color: "#10b981" }}>
+                ✓ Client answers locked in
+              </span>
+            )}
+            {!expertLocked && !clientLocked && !regenGraphic && !extraResearch && (
+              <span style={{ fontSize: "0.875rem", color: "#f59e0b" }}>
+                Lock in at least one question section, or select an option below to enable regeneration.
+              </span>
+            )}
+          </div>
           
           {/* Regen options */}
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", padding: "0.75rem", background: "#1f2937", borderRadius: "0.375rem" }}>
@@ -1105,7 +1279,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               className="btn-primary"
               type="button"
               onClick={handleQuickRegenWithAnswers}
-              disabled={isSubmittingQuickRegen}
+              disabled={isSubmittingQuickRegen || (!expertLocked && !clientLocked && !regenGraphic && !extraResearch)}
+              title={!expertLocked && !clientLocked && !regenGraphic && !extraResearch 
+                ? "Lock in answers or select an option to enable" 
+                : "Create a new version"}
             >
               {isSubmittingQuickRegen 
                 ? regenJobStatus === "running" 
@@ -1122,8 +1299,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         </section>
       )}
 
-      <section className="run-tracker__metadata">
-        <h2>Included files</h2>
+      <section id="included-files" className="run-tracker__metadata">
+        <h2>Included Files</h2>
         {includedFileIdSet.size === 0 ? (
           <p>No files were associated with this run.</p>
         ) : isLoadingIncludedFiles ? (
@@ -1141,7 +1318,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         )}
       </section>
 
-      <section>
+      <section id="steps">
         <h2>Steps</h2>
         <table className="table">
           <thead>
@@ -1161,7 +1338,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               <>
                 {steps.map((step) => (
                   <tr key={step.id}>
-                    <td>{step.name}</td>
+                    <td>{formatStepName(step.name)}</td>
                     <td>{step.status}</td>
                     <td>{formatDate(step.started_at)}</td>
                     <td>{formatDate(step.finished_at)}</td>
