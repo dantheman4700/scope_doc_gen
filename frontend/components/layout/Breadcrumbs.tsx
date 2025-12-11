@@ -8,6 +8,8 @@ import { useMemo, useState, useEffect, useRef } from "react";
 interface BreadcrumbItem {
   label: string;
   href?: string;
+  hasDropdown?: boolean;
+  dropdownType?: "projects" | "project-nav" | "runs";
 }
 
 interface BreadcrumbsProps {
@@ -15,6 +17,7 @@ interface BreadcrumbsProps {
   className?: string;
   projectId?: string;
   projectName?: string;
+  runTitle?: string;
 }
 
 // Route name mappings
@@ -34,12 +37,26 @@ interface DropdownState {
   position: { x: number; y: number };
 }
 
-export function Breadcrumbs({ items, className = "", projectId, projectName }: BreadcrumbsProps) {
+interface RunData {
+  id: string;
+  instructions: string | null;
+  template_type: string | null;
+  project_id: string;
+}
+
+interface ProjectData {
+  id: string;
+  name: string;
+}
+
+export function Breadcrumbs({ items, className = "", projectId, projectName, runTitle }: BreadcrumbsProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [dropdown, setDropdown] = useState<DropdownState>({ isOpen: false, items: [], position: { x: 0, y: 0 } });
-  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
-  const [runs, setRuns] = useState<Array<{ id: string; instructions: string | null; template_type: string | null }>>([]);
+  const [projects, setProjects] = useState<ProjectData[]>([]);
+  const [runs, setRuns] = useState<RunData[]>([]);
+  const [currentRun, setCurrentRun] = useState<RunData | null>(null);
+  const [currentProject, setCurrentProject] = useState<ProjectData | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -53,14 +70,42 @@ export function Breadcrumbs({ items, className = "", projectId, projectName }: B
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Fetch projects when needed
+  // Fetch projects list
   useEffect(() => {
-    if (pathname.includes("/projects")) {
-      fetch("/api/projects")
+    fetch("/api/projects")
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setProjects(data.map((p: ProjectData) => ({ id: p.id, name: p.name })));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Fetch current run data if on a run page
+  useEffect(() => {
+    const runMatch = pathname.match(/\/runs\/([0-9a-f-]{36})/i);
+    if (runMatch) {
+      const runId = runMatch[1];
+      fetch(`/api/runs/${runId}`)
         .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data)) {
-            setProjects(data.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+        .then((run: RunData) => {
+          setCurrentRun(run);
+          // Also fetch the project
+          if (run.project_id) {
+            fetch(`/api/projects/${run.project_id}`)
+              .then(res => res.json())
+              .then((project: ProjectData) => setCurrentProject(project))
+              .catch(() => {});
+            // Fetch runs for this project
+            fetch(`/api/projects/${run.project_id}/runs`)
+              .then(res => res.json())
+              .then(data => {
+                if (Array.isArray(data)) {
+                  setRuns(data);
+                }
+              })
+              .catch(() => {});
           }
         })
         .catch(() => {});
@@ -69,23 +114,55 @@ export function Breadcrumbs({ items, className = "", projectId, projectName }: B
 
   // Fetch runs when on a project page
   useEffect(() => {
-    const projectMatch = pathname.match(/\/projects\/([^/]+)/);
+    const projectMatch = pathname.match(/\/projects\/([0-9a-f-]{36})/i);
     if (projectMatch) {
       const pid = projectMatch[1];
+      // Fetch project details
+      fetch(`/api/projects/${pid}`)
+        .then(res => res.json())
+        .then((project: ProjectData) => setCurrentProject(project))
+        .catch(() => {});
+      // Fetch runs
       fetch(`/api/projects/${pid}/runs`)
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data)) {
-            setRuns(data.map((r: { id: string; instructions: string | null; template_type: string | null }) => ({
-              id: r.id,
-              instructions: r.instructions,
-              template_type: r.template_type
-            })));
+            setRuns(data);
           }
         })
         .catch(() => {});
     }
   }, [pathname]);
+
+  // Derive run title from run data
+  const derivedRunTitle = useMemo(() => {
+    if (runTitle) return runTitle;
+    if (!currentRun) return null;
+    
+    // Check for focus instruction pattern
+    const focusMatch = currentRun.instructions?.match(/(?:focus on|focusing on)[:\s]+(.+?)(?:\s+for\s+the|$)/i);
+    if (focusMatch) {
+      return focusMatch[1].trim().slice(0, 40);
+    }
+    
+    // Check for "XYZ For the current" pattern
+    const forCurrentMatch = currentRun.instructions?.match(/^(.+?)(?:\s+for\s+the\s+current)/i);
+    if (forCurrentMatch) {
+      return forCurrentMatch[1].trim().slice(0, 40);
+    }
+    
+    // Use short instructions if available
+    if (currentRun.instructions && currentRun.instructions.length < 50) {
+      return currentRun.instructions;
+    }
+    
+    // Fall back to template type
+    if (currentRun.template_type) {
+      return `${currentRun.template_type} Document`;
+    }
+    
+    return currentRun.id.slice(0, 8) + "…";
+  }, [currentRun, runTitle]);
 
   const breadcrumbs = useMemo(() => {
     // If custom items are provided, use them
@@ -93,76 +170,143 @@ export function Breadcrumbs({ items, className = "", projectId, projectName }: B
       return items;
     }
 
-    // Auto-generate breadcrumbs from pathname
-    const segments = pathname.split("/").filter(Boolean);
     const crumbs: BreadcrumbItem[] = [];
-
-    let currentPath = "";
-    segments.forEach((segment, index) => {
-      currentPath += `/${segment}`;
+    
+    // Check if we're on a run page
+    const isRunPage = pathname.startsWith("/runs/");
+    const isProjectPage = pathname.startsWith("/projects/");
+    
+    if (isRunPage && currentProject && currentRun) {
+      // Run page: Projects > ProjectName > RunTitle
+      crumbs.push({
+        label: "Projects",
+        href: "/projects",
+        hasDropdown: true,
+        dropdownType: "projects",
+      });
+      crumbs.push({
+        label: currentProject.name,
+        href: `/projects/${currentProject.id}`,
+        hasDropdown: true,
+        dropdownType: "project-nav",
+      });
+      crumbs.push({
+        label: derivedRunTitle || "Run",
+        hasDropdown: runs.length > 1,
+        dropdownType: "runs",
+      });
+    } else if (isProjectPage) {
+      // Project page: Projects > ProjectName
+      const segments = pathname.split("/").filter(Boolean);
       
-      // Skip UUID segments but include them in the path
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment);
+      crumbs.push({
+        label: "Projects",
+        href: "/projects",
+        hasDropdown: true,
+        dropdownType: "projects",
+      });
       
-      if (isUUID) {
-        // For UUIDs, use a shortened version as label
-        const shortId = segment.slice(0, 8) + "…";
+      if (currentProject) {
+        const hasMoreSegments = segments.length > 2;
         crumbs.push({
-          label: shortId,
-          href: index < segments.length - 1 ? currentPath : undefined,
-        });
-      } else {
-        const label = routeNames[segment] || segment.charAt(0).toUpperCase() + segment.slice(1);
-        crumbs.push({
-          label,
-          href: index < segments.length - 1 ? currentPath : undefined,
+          label: currentProject.name,
+          href: hasMoreSegments ? `/projects/${currentProject.id}` : undefined,
+          hasDropdown: true,
+          dropdownType: "project-nav",
         });
       }
-    });
+      
+      // Add additional segments (upload, etc.)
+      if (segments.length > 2) {
+        for (let i = 2; i < segments.length; i++) {
+          const segment = segments[i];
+          const label = routeNames[segment] || segment.charAt(0).toUpperCase() + segment.slice(1);
+          crumbs.push({
+            label,
+            href: i < segments.length - 1 ? `/${segments.slice(0, i + 1).join("/")}` : undefined,
+          });
+        }
+      }
+    } else {
+      // Other pages: auto-generate from pathname
+      const segments = pathname.split("/").filter(Boolean);
+      let currentPath = "";
+      
+      segments.forEach((segment, index) => {
+        currentPath += `/${segment}`;
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment);
+        
+        if (isUUID) {
+          crumbs.push({
+            label: segment.slice(0, 8) + "…",
+            href: index < segments.length - 1 ? currentPath : undefined,
+          });
+        } else {
+          const label = routeNames[segment] || segment.charAt(0).toUpperCase() + segment.slice(1);
+          crumbs.push({
+            label,
+            href: index < segments.length - 1 ? currentPath : undefined,
+            hasDropdown: segment === "projects",
+            dropdownType: segment === "projects" ? "projects" : undefined,
+          });
+        }
+      });
+    }
 
     return crumbs;
-  }, [pathname, items]);
+  }, [pathname, items, currentProject, currentRun, derivedRunTitle, runs.length]);
 
   const handleBreadcrumbClick = (event: React.MouseEvent, crumb: BreadcrumbItem, index: number) => {
-    // Determine what kind of dropdown to show
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     
-    // Check if this is the "Projects" breadcrumb
-    if (crumb.label === "Projects") {
+    if (crumb.hasDropdown && crumb.dropdownType) {
       event.preventDefault();
-      setDropdown({
-        isOpen: true,
-        items: projects.slice(0, 10).map(p => ({
-          label: p.name,
-          href: `/projects/${p.id}`
-        })),
-        position: { x: rect.left, y: rect.bottom + 4 }
-      });
-      return;
-    }
-    
-    // Check if this is a project UUID (in projects context)
-    const isProjectContext = pathname.includes("/projects/");
-    const isUUID = /^[0-9a-f]{8}…$/i.test(crumb.label);
-    
-    if (isProjectContext && isUUID && runs.length > 0) {
-      event.preventDefault();
-      setDropdown({
-        isOpen: true,
-        items: [
-          { label: "📁 Files", href: crumb.href || pathname },
-          { label: "⬆️ Upload Files", href: `${crumb.href || pathname.split('/runs')[0]}/upload` },
-          ...runs.slice(0, 8).map(r => {
-            const runLabel = r.instructions?.slice(0, 40) || r.template_type || r.id.slice(0, 8);
+      
+      let dropdownItems: Array<{ label: string; href: string }> = [];
+      
+      switch (crumb.dropdownType) {
+        case "projects":
+          dropdownItems = projects.slice(0, 10).map(p => ({
+            label: p.name,
+            href: `/projects/${p.id}`
+          }));
+          break;
+          
+        case "project-nav":
+          if (currentProject) {
+            dropdownItems = [
+              { label: "📁 View Project", href: `/projects/${currentProject.id}` },
+              { label: "⬆️ Upload Files", href: `/projects/${currentProject.id}/upload` },
+              ...runs.slice(0, 8).map(r => {
+                const label = r.instructions?.slice(0, 35) || r.template_type || r.id.slice(0, 8);
+                return {
+                  label: `🏃 ${label}${(r.instructions?.length || 0) > 35 ? "…" : ""}`,
+                  href: `/runs/${r.id}`
+                };
+              })
+            ];
+          }
+          break;
+          
+        case "runs":
+          dropdownItems = runs.slice(0, 10).map(r => {
+            const label = r.instructions?.slice(0, 35) || r.template_type || r.id.slice(0, 8);
             return {
-              label: `🏃 ${runLabel}${r.instructions && r.instructions.length > 40 ? '…' : ''}`,
+              label: `${label}${(r.instructions?.length || 0) > 35 ? "…" : ""}`,
               href: `/runs/${r.id}`
             };
-          })
-        ],
-        position: { x: rect.left, y: rect.bottom + 4 }
-      });
-      return;
+          });
+          break;
+      }
+      
+      if (dropdownItems.length > 0) {
+        setDropdown({
+          isOpen: true,
+          items: dropdownItems,
+          position: { x: rect.left, y: rect.bottom + 4 }
+        });
+        return;
+      }
     }
     
     // Default: navigate normally
@@ -193,13 +337,13 @@ export function Breadcrumbs({ items, className = "", projectId, projectName }: B
         {breadcrumbs.map((crumb, index) => (
           <div key={index} className="flex items-center gap-1">
             <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-            {crumb.href ? (
+            {crumb.href || crumb.hasDropdown ? (
               <button
                 onClick={(e) => handleBreadcrumbClick(e, crumb, index)}
                 className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0"
               >
                 <span>{crumb.label}</span>
-                <ChevronDown className="h-3 w-3 opacity-50" />
+                {crumb.hasDropdown && <ChevronDown className="h-3 w-3 opacity-50" />}
               </button>
             ) : (
               <span className="text-foreground font-medium">{crumb.label}</span>

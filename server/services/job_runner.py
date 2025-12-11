@@ -646,7 +646,7 @@ class JobRegistry:
             result_path = paths.root / Path(result_rel)
             if not result_path.exists():
                 LOGGER.warning(f"Result file not found for question generation: {result_path}")
-                self._complete_run_step(step_id, JobState.FAILED, logs="Result file not found")
+                self._finish_run_step(step_id, "failed", "Result file not found")
                 return
             
             scope_markdown = result_path.read_text(encoding="utf-8")
@@ -663,13 +663,13 @@ class JobRegistry:
                 expert_count = len(questions.get('questions_for_expert', []))
                 client_count = len(questions.get('questions_for_client', []))
                 LOGGER.info(f"Auto-generated {expert_count} expert questions, {client_count} client questions")
-                self._complete_run_step(step_id, JobState.SUCCESS, logs=f"Generated {expert_count} expert and {client_count} client questions")
+                self._finish_run_step(step_id, "success", f"Generated {expert_count} expert and {client_count} client questions")
             else:
                 LOGGER.warning("Question generation returned empty results")
-                self._complete_run_step(step_id, JobState.SUCCESS, logs="No questions generated")
+                self._finish_run_step(step_id, "success", "No questions generated")
         except Exception as exc:
             LOGGER.exception(f"Auto question generation failed for job {job.id}: {exc}")
-            self._complete_run_step(step_id, JobState.FAILED, logs=str(exc))
+            self._finish_run_step(step_id, "failed", str(exc))
 
     def _update_run(self, run_id: UUID, **updates) -> None:
         with get_session() as session:

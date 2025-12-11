@@ -23,7 +23,7 @@ try:
 except ImportError:
     MARKGDOC_AVAILABLE = False
     process_markdown_content = None
-    logger.warning("markgdoc not available, using legacy markdown conversion")
+    logger.info("markgdoc not installed, using legacy markdown conversion")
 
 
 def create_google_doc_from_markdown(

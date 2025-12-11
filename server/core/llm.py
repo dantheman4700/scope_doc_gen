@@ -406,9 +406,14 @@ class ClaudeExtractor:
         self,
         *,
         scope_markdown: str,
+        extra_context: Optional[str] = None,
     ) -> Dict[str, List[str]]:
         """
         Generate clarifying questions based on the scope document.
+        
+        Args:
+            scope_markdown: The scope document to generate questions for
+            extra_context: Optional additional context (e.g., existing questions to avoid)
         
         Returns a dict with:
         - questions_for_expert: Technical clarifications for solutions architect
@@ -430,7 +435,10 @@ class ClaudeExtractor:
             "Each question should be specific, actionable, and add real value."
         )
 
-        user_prompt = f"SCOPE DOCUMENT:\n\n{scope_markdown}\n\nGenerate clarifying questions for this scope."
+        user_prompt = f"SCOPE DOCUMENT:\n\n{scope_markdown}\n\n"
+        if extra_context:
+            user_prompt += f"{extra_context}\n\n"
+        user_prompt += "Generate clarifying questions for this scope."
 
         try:
             response = self.client.messages.create(
@@ -458,6 +466,70 @@ class ClaudeExtractor:
         except Exception as exc:
             logger.exception(f"Question generation failed: {exc}")
             return {"questions_for_expert": [], "questions_for_client": []}
+
+    def check_ambiguity(
+        self,
+        *,
+        scope_markdown: str,
+    ) -> Dict[str, Any]:
+        """
+        Analyze a scope document for ambiguous statements that could lead to scope creep.
+        
+        Returns a dict with:
+        - ambiguities: List of ambiguous items with statement, section, concern, and suggestion
+        - risk_level: Overall risk level (low, medium, high)
+        - summary: Brief summary of the analysis
+        """
+        system_prompt = (
+            "You are a senior solutions architect and contract specialist reviewing a scope document "
+            "for potential ambiguities that could lead to scope creep or client disputes.\n\n"
+            "Analyze the document and identify statements that are:\n"
+            "1. Vague or open to interpretation (e.g., 'as needed', 'when appropriate', 'similar features')\n"
+            "2. Missing specific limits or boundaries (e.g., undefined number of iterations, revisions)\n"
+            "3. Using subjective language that clients might interpret broadly (e.g., 'comprehensive', 'full support')\n"
+            "4. Lacking clear success criteria or deliverable definitions\n"
+            "5. Containing implied work that isn't explicitly scoped\n\n"
+            "For each ambiguity found, provide:\n"
+            "- statement: The exact or near-exact problematic text\n"
+            "- section: Which section of the document it appears in\n"
+            "- concern: Why this is problematic and how it could be misinterpreted\n"
+            "- suggestion: A clearer, more specific alternative wording\n\n"
+            "Also assess the overall risk_level as 'low', 'medium', or 'high' based on the number "
+            "and severity of ambiguities.\n\n"
+            "Return ONLY valid JSON with keys: 'ambiguities' (array), 'risk_level' (string), 'summary' (string)."
+        )
+
+        user_prompt = f"SCOPE DOCUMENT:\n\n{scope_markdown}\n\nAnalyze this scope for ambiguities that could lead to scope creep."
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=16000,
+                temperature=1,
+                thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": user_prompt}],
+                    }
+                ],
+            )
+            text = self._extract_text_from_response(response)
+            logger.info(f"Ambiguity check raw response (first 500 chars): {text[:500] if text else 'EMPTY'}")
+            result = self._parse_feedback_json(text)
+            return {
+                "ambiguities": result.get("ambiguities", []),
+                "risk_level": result.get("risk_level", "low"),
+                "summary": result.get("summary", "No significant ambiguities detected."),
+            }
+        except Exception as exc:
+            logger.exception(f"Ambiguity check failed: {exc}")
+            return {
+                "ambiguities": [],
+                "risk_level": "unknown",
+                "summary": f"Analysis failed: {exc}",
+            }
 
     def extract_variables_with_raw(
         self,

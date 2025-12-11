@@ -523,6 +523,266 @@ async def generate_run_questions(
     return questions
 
 
+class GenerateMoreQuestionsRequest(BaseModel):
+    question_type: str = Field(..., description="Type of questions: 'expert' or 'client'")
+    existing_questions: List[str] = Field(default=[], description="List of existing questions to avoid duplicates")
+
+
+class AmbiguityItem(BaseModel):
+    statement: str = Field(..., description="The ambiguous statement from the document")
+    section: str = Field(..., description="Which section this appears in")
+    concern: str = Field(..., description="Why this is ambiguous and could cause scope creep")
+    suggestion: str = Field(..., description="Suggested clarification or rewording")
+
+
+class AmbiguityCheckResponse(BaseModel):
+    ambiguities: List[AmbiguityItem] = Field(default=[], description="List of detected ambiguities")
+    risk_level: str = Field(..., description="Overall risk level: 'low', 'medium', or 'high'")
+    summary: str = Field(..., description="Brief summary of the analysis")
+
+
+class SaveMarkdownRequest(BaseModel):
+    markdown: str = Field(..., description="The edited markdown content")
+    version: int = Field(..., description="The version number being edited")
+
+
+@run_router.post("/{run_id}/generate-more-questions")
+async def generate_more_questions(
+    run_id: UUID,
+    request: GenerateMoreQuestionsRequest,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """
+    Generate additional questions for a run, avoiding duplicates of existing questions.
+    """
+    from server.core.llm import ClaudeExtractor
+
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before generating questions")
+
+    # Find the rendered doc artifact
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        scope_markdown = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    # Build context for generating more questions
+    existing_list = "\n".join([f"- {q}" for q in request.existing_questions])
+    question_type_label = "technical expert (solutions architect)" if request.question_type == "expert" else "client"
+    
+    extra_prompt = f"""
+You have already generated these questions for the {question_type_label}:
+{existing_list}
+
+Now generate 3-5 NEW, high-value questions that are NOT duplicates of the above.
+Focus on questions that would reveal important missing details or clarify ambiguous requirements.
+If you cannot think of any valuable new questions, return an empty list.
+Only return questions for the {question_type_label}, not both types.
+"""
+
+    # Generate more questions using Claude
+    try:
+        extractor = ClaudeExtractor()
+        # Use the same generate_questions method but with extra context
+        questions = extractor.generate_questions(
+            scope_markdown=scope_markdown,
+            extra_context=extra_prompt
+        )
+    except Exception as exc:
+        logger.exception("Failed to generate more questions")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to generate questions: {exc}")
+
+    # Get the relevant questions based on type
+    if request.question_type == "expert":
+        new_questions = questions.get("questions_for_expert", [])
+    else:
+        new_questions = questions.get("questions_for_client", [])
+
+    # Filter out any duplicates that might have slipped through
+    existing_lower = set(q.lower().strip() for q in request.existing_questions)
+    unique_new = [q for q in new_questions if q.lower().strip() not in existing_lower]
+
+    # Append to existing questions in run params
+    params = dict(run.params or {})
+    param_key = f"questions_for_{request.question_type}"
+    current_questions = params.get(param_key, [])
+    params[param_key] = current_questions + unique_new
+    run.params = params
+    db.add(run)
+    db.commit()
+
+    return {"new_questions": unique_new, "total_questions": len(params[param_key])}
+
+
+@run_router.post("/{run_id}/check-ambiguity", response_model=AmbiguityCheckResponse)
+async def check_run_ambiguity(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """
+    Analyze the scope document for ambiguous statements that could lead to scope creep.
+    Uses LLM to identify vague language, unclear deliverables, and potential misinterpretations.
+    """
+    from server.core.llm import ClaudeExtractor
+
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if run.status != "success":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run must be successful before checking ambiguity")
+
+    # Find the rendered doc artifact
+    artifact = (
+        db.query(models.Artifact)
+        .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+        .order_by(models.Artifact.created_at.desc())
+        .first()
+    )
+
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rendered document not found")
+
+    project_id_str = str(run.project_id)
+
+    try:
+        local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download artifact: {exc}")
+
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Rendered document is unavailable")
+
+    try:
+        scope_markdown = local_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to read artifact: {exc}")
+
+    # Analyze for ambiguity using Claude
+    try:
+        extractor = ClaudeExtractor()
+        result = extractor.check_ambiguity(scope_markdown=scope_markdown)
+    except Exception as exc:
+        logger.exception("Failed to check ambiguity")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to analyze document: {exc}")
+
+    return AmbiguityCheckResponse(
+        ambiguities=[AmbiguityItem(**item) for item in result.get("ambiguities", [])],
+        risk_level=result.get("risk_level", "low"),
+        summary=result.get("summary", "No significant ambiguities detected."),
+    )
+
+
+@run_router.post("/{run_id}/save-markdown")
+async def save_run_markdown(
+    run_id: UUID,
+    request: SaveMarkdownRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Save edited markdown content for a run version.
+    Creates a sub-version by incrementing the edit count in version feedback.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    # Get or create the version
+    if request.version == 1:
+        # For v1, we update the artifact directly
+        artifact = (
+            db.query(models.Artifact)
+            .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+            .order_by(models.Artifact.created_at.desc())
+            .first()
+        )
+        
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No document found to edit")
+        
+        # Track edit count in artifact meta
+        meta = dict(artifact.meta or {})
+        edit_count = meta.get("edit_count", 0) + 1
+        meta["edit_count"] = edit_count
+        meta["last_edited"] = datetime.utcnow().isoformat()
+        artifact.meta = meta
+        flag_modified(artifact, "meta")
+        
+        # Update the actual file content
+        project_id_str = str(run.project_id)
+        output_dir = Path(DATA_ROOT) / "projects" / project_id_str / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        local_path = output_dir / Path(artifact.path).name
+        local_path.write_text(request.markdown, encoding="utf-8")
+        
+        db.add(artifact)
+        db.commit()
+        
+        return {
+            "success": True,
+            "version": 1,
+            "sub_version": edit_count,
+            "message": f"Saved as v1.{edit_count}",
+        }
+    else:
+        # For other versions, update the RunVersion
+        run_version = (
+            db.query(models.RunVersion)
+            .filter(models.RunVersion.run_id == run_id, models.RunVersion.version_number == request.version)
+            .first()
+        )
+        
+        if not run_version:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Version {request.version} not found")
+        
+        # Track edit count in feedback
+        feedback = dict(run_version.feedback or {})
+        edit_count = feedback.get("edit_count", 0) + 1
+        feedback["edit_count"] = edit_count
+        feedback["last_edited"] = datetime.utcnow().isoformat()
+        run_version.feedback = feedback
+        run_version.markdown = request.markdown
+        flag_modified(run_version, "feedback")
+        flag_modified(run_version, "markdown")
+        
+        db.add(run_version)
+        db.commit()
+        
+        return {
+            "success": True,
+            "version": request.version,
+            "sub_version": edit_count,
+            "message": f"Saved as v{request.version}.{edit_count}",
+        }
+
+
 @run_router.get("/{run_id}/download-docx")
 async def download_run_docx(
     run_id: UUID,

@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVersion } from "@/types/backend";
 import { useToast } from "@/components/ui/use-toast";
+import { QuestionsSection } from "./QuestionsSection";
+import { MarkdownEditorModal } from "./MarkdownEditorModal";
 
 interface RunStatusTrackerProps {
   runId: string;
@@ -36,7 +38,16 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [existingGoogleDocUrl, setExistingGoogleDocUrl] = useState<string | null>(null);
   const [isEmbedding, setIsEmbedding] = useState<boolean>(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState<boolean>(false);
+  const [isGeneratingMoreExpert, setIsGeneratingMoreExpert] = useState<boolean>(false);
+  const [isGeneratingMoreClient, setIsGeneratingMoreClient] = useState<boolean>(false);
   const [isViewingMarkdown, setIsViewingMarkdown] = useState<boolean>(false);
+  const [isCheckingAmbiguity, setIsCheckingAmbiguity] = useState<boolean>(false);
+  const [ambiguityResult, setAmbiguityResult] = useState<{
+    ambiguities: Array<{ statement: string; section: string; concern: string; suggestion: string }>;
+    risk_level: string;
+    summary: string;
+  } | null>(null);
+  const [showAmbiguityModal, setShowAmbiguityModal] = useState<boolean>(false);
   const [markdownContent, setMarkdownContent] = useState<string>("");
   const [isLoadingMarkdown, setIsLoadingMarkdown] = useState<boolean>(false);
   const [showQuickRegen, setShowQuickRegen] = useState<boolean>(false);
@@ -765,6 +776,35 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             {isEmbedding ? "💾 Saving…" : "💾 Save to Vector Store"}
           </button>
 
+          {/* Check for Ambiguity */}
+          <button
+            className="btn-secondary"
+            type="button"
+            onClick={async () => {
+              setIsCheckingAmbiguity(true);
+              try {
+                const response = await fetch(`/api/runs/${run.id}/check-ambiguity`, {
+                  method: "POST",
+                });
+                if (!response.ok) {
+                  throw new Error("Failed to check ambiguity");
+                }
+                const result = await response.json();
+                setAmbiguityResult(result);
+                setShowAmbiguityModal(true);
+              } catch (err) {
+                showError("Failed to analyze document for ambiguities");
+              } finally {
+                setIsCheckingAmbiguity(false);
+              }
+            }}
+            disabled={!canExport || isCheckingAmbiguity}
+            title="Analyze document for ambiguous statements that could lead to scope creep"
+            style={{ fontSize: "0.875rem" }}
+          >
+            {isCheckingAmbiguity ? "🔍 Analyzing…" : "🔍 Check Ambiguity"}
+          </button>
+
           {/* Refresh */}
           <button 
             className="btn-secondary" 
@@ -904,9 +944,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         )}
       </section>
 
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      {/* Questions Sections - Redesigned */}
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0 }}>Questions for Expert</h2>
+          <h2 style={{ margin: 0 }}>Clarifying Questions</h2>
           {canExport && !questions && (
             <button
               className="btn-secondary"
@@ -918,73 +959,95 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
             </button>
           )}
         </div>
-        <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-          Technical clarifications for the solutions architect. Answer these to improve the scope.
-        </p>
-        {questions?.questions_for_expert && questions.questions_for_expert.length > 0 ? (
+        
+        {questions ? (
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {questions.questions_for_expert.map((q, idx) => (
-              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
-                <textarea
-                  placeholder="Your answer..."
-                  value={expertAnswers[idx] || ""}
-                  onChange={(e) => setExpertAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
-                  rows={2}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem 0.75rem",
-                    borderRadius: "0.375rem",
-                    border: "1px solid #374151",
-                    background: "#1f2937",
-                    color: "#e5e7eb",
-                    fontSize: "0.875rem",
-                    resize: "vertical",
-                    minHeight: "2.5rem",
-                    fontFamily: "inherit",
-                  }}
-                />
-              </div>
-            ))}
+            <QuestionsSection
+              title="Questions for Expert"
+              type="expert"
+              questions={questions.questions_for_expert || []}
+              answers={expertAnswers}
+              onAnswerChange={(idx, answer) => setExpertAnswers((prev) => ({ ...prev, [idx]: answer }))}
+              onGenerateMore={async () => {
+                setIsGeneratingMoreExpert(true);
+                try {
+                  const response = await fetch(`/api/runs/${run.id}/generate-more-questions`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      question_type: "expert",
+                      existing_questions: questions.questions_for_expert || [],
+                    }),
+                  });
+                  if (!response.ok) {
+                    throw new Error("Failed to generate more questions");
+                  }
+                  const data = await response.json();
+                  if (data.new_questions && data.new_questions.length > 0) {
+                    setRun((prev) => ({
+                      ...prev,
+                      params: {
+                        ...prev.params,
+                        questions_for_expert: [...(questions.questions_for_expert || []), ...data.new_questions],
+                      },
+                    }));
+                    showSuccess(`Generated ${data.new_questions.length} new expert questions`);
+                  } else {
+                    showSuccess("No additional questions needed");
+                  }
+                } catch (err) {
+                  showError("Failed to generate more questions");
+                } finally {
+                  setIsGeneratingMoreExpert(false);
+                }
+              }}
+              isGeneratingMore={isGeneratingMoreExpert}
+            />
+            
+            <QuestionsSection
+              title="Questions for Client"
+              type="client"
+              questions={questions.questions_for_client || []}
+              answers={clientAnswers}
+              onAnswerChange={(idx, answer) => setClientAnswers((prev) => ({ ...prev, [idx]: answer }))}
+              onGenerateMore={async () => {
+                setIsGeneratingMoreClient(true);
+                try {
+                  const response = await fetch(`/api/runs/${run.id}/generate-more-questions`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      question_type: "client",
+                      existing_questions: questions.questions_for_client || [],
+                    }),
+                  });
+                  if (!response.ok) {
+                    throw new Error("Failed to generate more questions");
+                  }
+                  const data = await response.json();
+                  if (data.new_questions && data.new_questions.length > 0) {
+                    setRun((prev) => ({
+                      ...prev,
+                      params: {
+                        ...prev.params,
+                        questions_for_client: [...(questions.questions_for_client || []), ...data.new_questions],
+                      },
+                    }));
+                    showSuccess(`Generated ${data.new_questions.length} new client questions`);
+                  } else {
+                    showSuccess("No additional questions needed");
+                  }
+                } catch (err) {
+                  showError("Failed to generate more questions");
+                } finally {
+                  setIsGeneratingMoreClient(false);
+                }
+              }}
+              isGeneratingMore={isGeneratingMoreClient}
+            />
           </div>
         ) : (
-          <p className="muted">No expert questions generated yet.</p>
-        )}
-      </section>
-
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        <h2 style={{ margin: 0 }}>Questions for Client</h2>
-        <p className="muted" style={{ fontSize: "0.875rem", marginTop: "-0.25rem" }}>
-          Follow-up questions to ask the client. Record their answers here for context.
-        </p>
-        {questions?.questions_for_client && questions.questions_for_client.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {questions.questions_for_client.map((q, idx) => (
-              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#e5e7eb" }}>{idx + 1}. {q}</label>
-                <textarea
-                  placeholder="Client's answer..."
-                  value={clientAnswers[idx] || ""}
-                  onChange={(e) => setClientAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
-                  rows={2}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem 0.75rem",
-                    borderRadius: "0.375rem",
-                    border: "1px solid #374151",
-                    background: "#1f2937",
-                    color: "#e5e7eb",
-                    fontSize: "0.875rem",
-                    resize: "vertical",
-                    minHeight: "2.5rem",
-                    fontFamily: "inherit",
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="muted">No client questions generated yet.</p>
+          <p className="muted">No questions generated yet. Generate questions to get clarifications.</p>
         )}
       </section>
 
@@ -1144,62 +1207,134 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         </table>
       </section>
 
-      {/* Markdown Viewer Modal */}
-      {isViewingMarkdown && (
+      {/* Ambiguity Check Modal */}
+      {showAmbiguityModal && ambiguityResult && (
         <div
           className="modal-backdrop"
           style={{
             position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.7)",
             display: "flex",
-            justifyContent: "center",
             alignItems: "center",
+            justifyContent: "center",
             zIndex: 1000,
-            padding: "2rem",
           }}
-          onClick={() => setIsViewingMarkdown(false)}
+          onClick={() => setShowAmbiguityModal(false)}
         >
           <div
-            className="card"
+            className="modal-content card"
             style={{
-              maxWidth: "900px",
-              width: "100%",
-              maxHeight: "90vh",
-              display: "flex",
-              flexDirection: "column",
-              gap: "1rem",
+              width: "90%",
+              maxWidth: "800px",
+              maxHeight: "85vh",
+              overflow: "auto",
               padding: "1.5rem",
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 style={{ margin: 0 }}>Markdown Preview{selectedVersion ? ` (v${selectedVersion})` : ""}</h2>
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn-secondary" type="button" onClick={handleCopyMarkdown}>
-                  Copy to Clipboard
-                </button>
-                <button className="btn-secondary" type="button" onClick={() => setIsViewingMarkdown(false)}>
-                  Close
-                </button>
-              </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                🔍 Ambiguity Analysis
+                <span 
+                  className={`chip ${
+                    ambiguityResult.risk_level === "high" ? "chip--failed" :
+                    ambiguityResult.risk_level === "medium" ? "chip--warning" :
+                    "chip--success"
+                  }`}
+                >
+                  {ambiguityResult.risk_level.toUpperCase()} RISK
+                </span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowAmbiguityModal(false)}
+                style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#9ca3af" }}
+              >
+                ×
+              </button>
             </div>
-            <div
-              style={{
-                flex: 1,
-                overflow: "auto",
-                background: "#0f0f1a",
-                borderRadius: "0.5rem",
-                padding: "1rem",
-                border: "1px solid #374151",
-              }}
-            >
-              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.875rem", lineHeight: 1.6, color: "#e5e7eb", fontFamily: "monospace" }}>
-                {markdownContent}
-              </pre>
+            
+            <p style={{ marginBottom: "1rem", color: "#d1d5db" }}>{ambiguityResult.summary}</p>
+            
+            {ambiguityResult.ambiguities.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                {ambiguityResult.ambiguities.map((item, idx) => (
+                  <div key={idx} style={{ 
+                    border: "1px solid #374151", 
+                    borderRadius: "0.5rem", 
+                    padding: "1rem",
+                    background: "#1f2937"
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+                      <span className="chip" style={{ fontSize: "0.75rem" }}>{item.section}</span>
+                    </div>
+                    <p style={{ fontWeight: 500, color: "#fbbf24", marginBottom: "0.5rem" }}>
+                      &ldquo;{item.statement}&rdquo;
+                    </p>
+                    <p style={{ fontSize: "0.875rem", color: "#ef4444", marginBottom: "0.5rem" }}>
+                      <strong>Concern:</strong> {item.concern}
+                    </p>
+                    <p style={{ fontSize: "0.875rem", color: "#10b981" }}>
+                      <strong>Suggestion:</strong> {item.suggestion}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ color: "#10b981", textAlign: "center", padding: "2rem" }}>
+                ✓ No significant ambiguities detected. Your scope document is clear and well-defined.
+              </p>
+            )}
+            
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={() => setShowAmbiguityModal(false)}
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Markdown Editor Modal */}
+      {isViewingMarkdown && (
+        <MarkdownEditorModal
+          isOpen={isViewingMarkdown}
+          onClose={() => setIsViewingMarkdown(false)}
+          content={markdownContent}
+          version={selectedVersion || 1}
+          runId={run.id}
+          onSave={async (newContent) => {
+            try {
+              const response = await fetch(`/api/runs/${run.id}/save-markdown`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  markdown: newContent,
+                  version: selectedVersion || 1,
+                }),
+              });
+              if (!response.ok) {
+                throw new Error("Failed to save");
+              }
+              const result = await response.json();
+              setMarkdownContent(newContent);
+              showSuccess(result.message || "Saved successfully");
+              return true;
+            } catch (err) {
+              showError("Failed to save markdown");
+              return false;
+            }
+          }}
+          onCopy={handleCopyMarkdown}
+        />
       )}
 
       {/* Quick Regen Modal */}
@@ -1318,6 +1453,7 @@ function formatDate(value?: string | null): string {
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
       timeZoneName: "short"
     });
   } catch (err) {
