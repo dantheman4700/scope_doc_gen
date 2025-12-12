@@ -1197,7 +1197,7 @@ async def regenerate_solution_graphic(
     image_path = project_runs_dir / image_filename
     
     with open(image_path, "wb") as f:
-        f.write(result.image_data)
+        f.write(result.data)
 
     # Update or create artifact
     existing_artifact = (
@@ -1222,7 +1222,7 @@ async def regenerate_solution_graphic(
     
     db.commit()
 
-    return StreamingResponse(io.BytesIO(result.image_data), media_type=result.mime_type)
+    return StreamingResponse(io.BytesIO(result.data), media_type=result.mime_type)
 
 
 @run_router.post("/{run_id}/export-google-doc")
