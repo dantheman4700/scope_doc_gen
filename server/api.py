@@ -118,8 +118,10 @@ def create_app() -> FastAPI:
         try:
             response = await call_next(request)
             return response
-        except Exception:
-            logger.exception("Unhandled exception during request")
+        except Exception as exc:
+            logger.exception(
+                f"CRASH: Unhandled exception during {request.method} {request.url.path} - {type(exc).__name__}: {exc}"
+            )
             raise
 
     return app

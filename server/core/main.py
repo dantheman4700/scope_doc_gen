@@ -702,14 +702,16 @@ class ScopeDocGenerator:
             notify("image_gen", "started", None)
             try:
                 # Extract proposed solution from markdown for image prompt
+                logger.info("IMAGE_GEN: Extracting proposed solution from markdown...")
                 solution_text = self._extract_proposed_solution(markdown)
                 if solution_text:
-                    logger.info(f"Generating solution image (resolution={image_resolution}, aspect={image_aspect_ratio})")
+                    logger.info(f"IMAGE_GEN: Starting generation (resolution={image_resolution}, aspect={image_aspect_ratio}, prompt_len={len(image_prompt or '')})")
                     result = generate_scope_image(
                         solution_text=solution_text,
                         custom_prompt=image_prompt,
                         size=image_resolution,
                     )
+                    logger.info(f"IMAGE_GEN: Generation complete, got {len(result.data)} bytes, mime={result.mime_type}")
                     # Save image
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     ext = "png" if "png" in result.mime_type else "jpg"
@@ -717,17 +719,17 @@ class ScopeDocGenerator:
                     image_path = self.output_dir / image_filename
                     image_path.parent.mkdir(parents=True, exist_ok=True)
                     image_path.write_bytes(result.data)
-                    logger.info(f"Saved solution image: {image_path}")
+                    logger.info(f"IMAGE_GEN: Saved solution image to {image_path}")
                     print(f"[OK] Solution image saved to: {image_path}")
                     notify("image_gen", "completed", image_filename)
                 else:
-                    logger.warning("Could not extract proposed solution for image generation")
+                    logger.warning("IMAGE_GEN: Could not extract proposed solution for image generation")
                     notify("image_gen", "skipped", "No proposed solution found")
             except ImageGenError as img_exc:
-                logger.warning(f"Image generation failed: {img_exc}")
+                logger.error(f"IMAGE_GEN FAILED (ImageGenError): {img_exc}")
                 notify("image_gen", "failed", str(img_exc))
             except Exception as img_exc:
-                logger.exception(f"Unexpected image generation error: {img_exc}")
+                logger.exception(f"IMAGE_GEN CRASHED (unexpected): {type(img_exc).__name__}: {img_exc}")
                 notify("image_gen", "failed", str(img_exc))
         elif enable_image_generation and not GENAI_AVAILABLE:
             logger.warning("Image generation requested but google-genai not installed")

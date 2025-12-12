@@ -1177,14 +1177,17 @@ async def regenerate_solution_graphic(
 
     # Generate the image
     try:
+        logger.info(f"REGEN_GRAPHIC: Starting for run {run_id}, template_type={run.template_type}, prompt_len={len(custom_prompt or '')}")
         result = generate_scope_image(
             solution_text=solution_text[:2000],
             custom_prompt=custom_prompt if custom_prompt else None,
         )
+        logger.info(f"REGEN_GRAPHIC: Generated {len(result.data)} bytes, mime={result.mime_type}")
     except ImageGenError as exc:
+        logger.error(f"REGEN_GRAPHIC FAILED (ImageGenError) for run {run_id}: {exc}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Image generation failed: {exc}")
     except Exception as exc:
-        logger.exception("Unexpected error during graphic regeneration")
+        logger.exception(f"REGEN_GRAPHIC CRASHED for run {run_id}: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unexpected error: {exc}")
 
     # Save the new image
