@@ -86,8 +86,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [clientLocked, setClientLocked] = useState<boolean>(false);
   const [checkedExpert, setCheckedExpert] = useState<number[]>([]);
   const [checkedClient, setCheckedClient] = useState<number[]>([]);
-  const [questionsStateLoaded, setQuestionsStateLoaded] = useState<boolean>(false);
-  const skipNextSaveRef = useRef<boolean>(true); // Skip first save after loading to prevent overwriting
+  const [questionsStateInitialized, setQuestionsStateInitialized] = useState<boolean>(false);
+  const pendingSaveRef = useRef<boolean>(false); // Track if a save is needed
   const [isSubmittingQuickRegen, setIsSubmittingQuickRegen] = useState<boolean>(false);
   const [quickRegenText, setQuickRegenText] = useState<string>("");
   const [regenJobId, setRegenJobId] = useState<string | null>(null);
@@ -119,21 +119,23 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   // Recompute included IDs when run changes
   const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
 
-  // Initialize questions state from saved state on mount
+  // Initialize questions state from saved state on mount (once only)
   useEffect(() => {
-    if (questionsStateLoaded) return;
+    if (questionsStateInitialized) return;
     
     const savedState = run.questions_state;
+    console.log("[QuestionsState] Initializing from saved state:", savedState);
+    
     if (savedState) {
       // Convert string keys back to number keys for answers
-      if (savedState.expert_answers) {
+      if (savedState.expert_answers && Object.keys(savedState.expert_answers).length > 0) {
         const expertAns: Record<number, string> = {};
         Object.entries(savedState.expert_answers).forEach(([k, v]) => {
           expertAns[parseInt(k, 10)] = v;
         });
         setExpertAnswers(expertAns);
       }
-      if (savedState.client_answers) {
+      if (savedState.client_answers && Object.keys(savedState.client_answers).length > 0) {
         const clientAns: Record<number, string> = {};
         Object.entries(savedState.client_answers).forEach(([k, v]) => {
           clientAns[parseInt(k, 10)] = v;
@@ -142,74 +144,111 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
       }
       if (savedState.expert_locked) setExpertLocked(true);
       if (savedState.client_locked) setClientLocked(true);
-      if (savedState.checked_expert) setCheckedExpert(savedState.checked_expert);
-      if (savedState.checked_client) setCheckedClient(savedState.checked_client);
+      if (savedState.checked_expert && savedState.checked_expert.length > 0) {
+        setCheckedExpert(savedState.checked_expert);
+      }
+      if (savedState.checked_client && savedState.checked_client.length > 0) {
+        setCheckedClient(savedState.checked_client);
+      }
     }
-    // Skip the next auto-save to prevent overwriting the state we just loaded
-    skipNextSaveRef.current = true;
-    setQuestionsStateLoaded(true);
-  }, [run.questions_state, questionsStateLoaded]);
+    
+    setQuestionsStateInitialized(true);
+  }, [run.questions_state, questionsStateInitialized]);
 
-  // Auto-save questions state when it changes (debounced)
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
-  const saveQuestionsState = useCallback(async () => {
-    if (!questionsStateLoaded) return;
+  // Direct save function - takes current values as params to avoid stale closure issues
+  const doSaveQuestionsState = useCallback(async (
+    expAnswers: Record<number, string>,
+    cliAnswers: Record<number, string>,
+    expLocked: boolean,
+    cliLocked: boolean,
+    expChecked: number[],
+    cliChecked: number[]
+  ) => {
+    console.log("[QuestionsState] Saving state...", { expLocked, cliLocked, expChecked, cliChecked });
     
     try {
       // Convert number keys to string keys for JSON
       const expertAnsStr: Record<string, string> = {};
-      Object.entries(expertAnswers).forEach(([k, v]) => {
+      Object.entries(expAnswers).forEach(([k, v]) => {
         expertAnsStr[k] = v;
       });
       const clientAnsStr: Record<string, string> = {};
-      Object.entries(clientAnswers).forEach(([k, v]) => {
+      Object.entries(cliAnswers).forEach(([k, v]) => {
         clientAnsStr[k] = v;
       });
       
-      await fetch(`/api/runs/${run.id}/save-questions-state`, {
+      const response = await fetch(`/api/runs/${run.id}/save-questions-state`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expert_answers: expertAnsStr,
           client_answers: clientAnsStr,
-          expert_locked: expertLocked,
-          client_locked: clientLocked,
-          checked_expert: checkedExpert,
-          checked_client: checkedClient,
+          expert_locked: expLocked,
+          client_locked: cliLocked,
+          checked_expert: expChecked,
+          checked_client: cliChecked,
         }),
       });
+      
+      if (!response.ok) {
+        console.error("[QuestionsState] Save failed:", response.status, await response.text());
+      } else {
+        console.log("[QuestionsState] Save successful");
+      }
     } catch (err) {
-      console.error("Failed to save questions state:", err);
+      console.error("[QuestionsState] Save error:", err);
     }
-  }, [run.id, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient, questionsStateLoaded]);
+  }, [run.id]);
 
-  // Debounced auto-save when questions state changes
+  // Handlers that save immediately when called
+  const handleExpertLockChange = useCallback((locked: boolean) => {
+    console.log("[QuestionsState] Expert lock changed to:", locked);
+    setExpertLocked(locked);
+    // Save immediately with the new value
+    doSaveQuestionsState(expertAnswers, clientAnswers, locked, clientLocked, checkedExpert, checkedClient);
+  }, [doSaveQuestionsState, expertAnswers, clientAnswers, clientLocked, checkedExpert, checkedClient]);
+
+  const handleClientLockChange = useCallback((locked: boolean) => {
+    console.log("[QuestionsState] Client lock changed to:", locked);
+    setClientLocked(locked);
+    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, locked, checkedExpert, checkedClient);
+  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, checkedExpert, checkedClient]);
+
+  const handleExpertCheckedChange = useCallback((checked: number[]) => {
+    console.log("[QuestionsState] Expert checked changed to:", checked);
+    setCheckedExpert(checked);
+    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checked, checkedClient);
+  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedClient]);
+
+  const handleClientCheckedChange = useCallback((checked: number[]) => {
+    console.log("[QuestionsState] Client checked changed to:", checked);
+    setCheckedClient(checked);
+    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checked);
+  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert]);
+
+  // Debounced auto-save for answer text changes only
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   useEffect(() => {
-    if (!questionsStateLoaded) return;
-    
-    // Skip the first save after loading to prevent overwriting saved state
-    if (skipNextSaveRef.current) {
-      skipNextSaveRef.current = false;
-      return;
-    }
+    if (!questionsStateInitialized) return;
     
     // Clear existing timeout
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
     
-    // Save after 1 second of no changes
+    // Save after 2 seconds of no answer changes
     saveTimeoutRef.current = setTimeout(() => {
-      saveQuestionsState();
-    }, 1000);
+      console.log("[QuestionsState] Debounced save for answers");
+      doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient);
+    }, 2000);
     
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient, questionsStateLoaded, saveQuestionsState]);
+  }, [expertAnswers, clientAnswers]); // Only trigger on answer changes, not on other state
   
   // Check if questions are currently being generated
   const isQuestionsStepRunning = useMemo(() => {
@@ -1363,8 +1402,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                 }
               }}
               isGeneratingMore={isGeneratingMoreExpert}
-              onLockChange={(locked) => setExpertLocked(locked)}
-              onCheckedChange={(checked) => setCheckedExpert(checked)}
+              onLockChange={handleExpertLockChange}
+              onCheckedChange={handleExpertCheckedChange}
               initialLocked={expertLocked}
               initialChecked={checkedExpert}
             />
@@ -1410,8 +1449,8 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
                 }
               }}
               isGeneratingMore={isGeneratingMoreClient}
-              onLockChange={(locked) => setClientLocked(locked)}
-              onCheckedChange={(checked) => setCheckedClient(checked)}
+              onLockChange={handleClientLockChange}
+              onCheckedChange={handleClientCheckedChange}
               initialLocked={clientLocked}
               initialChecked={checkedClient}
             />

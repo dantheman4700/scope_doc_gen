@@ -146,17 +146,23 @@ export function QuestionsSection({
   const [isExpanded, setIsExpanded] = useState(false); // Collapsed by default
   const [isLockedIn, setIsLockedIn] = useState(initialLocked);
   const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set()); // All collapsed by default
-  const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(new Set(initialChecked));
+  const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(() => new Set(initialChecked));
+  
+  // Track if we've done initial setup (to avoid re-syncing after user interactions)
+  const [hasInitialized, setHasInitialized] = useState(false);
 
-  // Sync initialLocked prop to state when it changes (after parent loads saved state)
+  // Sync from props on initial load, then mark as initialized
   useEffect(() => {
-    setIsLockedIn(initialLocked);
-  }, [initialLocked]);
-
-  // Sync initialChecked prop to state when it changes
-  useEffect(() => {
-    setCheckedQuestions(new Set(initialChecked));
-  }, [initialChecked]);
+    if (!hasInitialized) {
+      // Apply any saved state from props
+      if (initialLocked || initialChecked.length > 0) {
+        setIsLockedIn(initialLocked);
+        setCheckedQuestions(new Set(initialChecked));
+      }
+      // Always mark as initialized after first render
+      setHasInitialized(true);
+    }
+  }, [initialLocked, initialChecked, hasInitialized]);
 
   // Sort questions: unchecked first, then checked
   const sortedQuestionIndices = useMemo(() => {
@@ -198,11 +204,16 @@ export function QuestionsSection({
           return newExp;
         });
       }
-      // Notify parent of checked state change
-      onCheckedChange?.(Array.from(next));
       return next;
     });
-  }, [onCheckedChange]);
+  }, []);
+  
+  // Notify parent of checked changes OUTSIDE the state setter (after state updates)
+  useEffect(() => {
+    if (hasInitialized) {
+      onCheckedChange?.(Array.from(checkedQuestions));
+    }
+  }, [checkedQuestions, hasInitialized, onCheckedChange]);
 
   const handleLockIn = useCallback(() => {
     // Remove unanswered questions from checked state

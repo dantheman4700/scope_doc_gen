@@ -1101,7 +1101,7 @@ def generate_questions(scope_markdown: str) -> Dict[str, List[str]]:
     Standalone function to generate questions from a scope markdown.
     Used by the API endpoints.
     """
-    extractor = ClaudeVariableExtractor()
+    extractor = ClaudeExtractor()
     return extractor.generate_questions(scope_markdown=scope_markdown)
 
 
