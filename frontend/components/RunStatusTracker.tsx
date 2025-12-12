@@ -200,55 +200,24 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
     }
   }, [run.id]);
 
-  // Handlers that save immediately when called
+  // Handlers for lock state - SAVE DISABLED TO FIX CRASH
   const handleExpertLockChange = useCallback((locked: boolean) => {
     console.log("[QuestionsState] Expert lock changed to:", locked);
     setExpertLocked(locked);
-    // Save immediately with the new value
-    doSaveQuestionsState(expertAnswers, clientAnswers, locked, clientLocked, checkedExpert, checkedClient);
-  }, [doSaveQuestionsState, expertAnswers, clientAnswers, clientLocked, checkedExpert, checkedClient]);
+    // TODO: Save is disabled - was causing infinite loop crash
+  }, []);
 
   const handleClientLockChange = useCallback((locked: boolean) => {
     console.log("[QuestionsState] Client lock changed to:", locked);
     setClientLocked(locked);
-    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, locked, checkedExpert, checkedClient);
-  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, checkedExpert, checkedClient]);
+    // TODO: Save is disabled - was causing infinite loop crash
+  }, []);
 
-  const handleExpertCheckedChange = useCallback((checked: number[]) => {
-    console.log("[QuestionsState] Expert checked changed to:", checked);
-    setCheckedExpert(checked);
-    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checked, checkedClient);
-  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedClient]);
+  // NOTE: Removed auto-save on checked changes - was causing infinite loop.
+  // State is saved when user clicks "Lock In" button only.
 
-  const handleClientCheckedChange = useCallback((checked: number[]) => {
-    console.log("[QuestionsState] Client checked changed to:", checked);
-    setCheckedClient(checked);
-    doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checked);
-  }, [doSaveQuestionsState, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert]);
-
-  // Debounced auto-save for answer text changes only
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
-  useEffect(() => {
-    if (!questionsStateInitialized) return;
-    
-    // Clear existing timeout
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-    
-    // Save after 2 seconds of no answer changes
-    saveTimeoutRef.current = setTimeout(() => {
-      console.log("[QuestionsState] Debounced save for answers");
-      doSaveQuestionsState(expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient);
-    }, 2000);
-    
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-    };
-  }, [expertAnswers, clientAnswers]); // Only trigger on answer changes, not on other state
+  // NOTE: Removed auto-save for answers - was contributing to infinite loops.
+  // State is saved only when user clicks "Lock In" button.
   
   // Check if questions are currently being generated
   const isQuestionsStepRunning = useMemo(() => {
@@ -290,7 +259,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         console.error(err);
         setError((err as Error).message);
       }
-    }, 3000);
+    }, 8000); // Increased from 3s to 8s to avoid Supabase rate limiting
 
     return () => {
       cancelled = true;
@@ -751,7 +720,7 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
         } catch {
           // Keep polling on transient errors
         }
-      }, 2000);
+      }, 5000); // Increased to reduce API calls
       
       // Safety timeout after 10 minutes
       setTimeout(() => {
@@ -1403,7 +1372,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }}
               isGeneratingMore={isGeneratingMoreExpert}
               onLockChange={handleExpertLockChange}
-              onCheckedChange={handleExpertCheckedChange}
               initialLocked={expertLocked}
               initialChecked={checkedExpert}
             />
@@ -1450,7 +1418,6 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }}
               isGeneratingMore={isGeneratingMoreClient}
               onLockChange={handleClientLockChange}
-              onCheckedChange={handleClientCheckedChange}
               initialLocked={clientLocked}
               initialChecked={checkedClient}
             />

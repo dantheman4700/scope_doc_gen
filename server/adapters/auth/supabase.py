@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from typing import Dict, Tuple
 from uuid import UUID
 
 import httpx
@@ -12,6 +14,11 @@ from server.core.config import SUPABASE_ANON_KEY, SUPABASE_URL
 from server.db import models
 
 from .base import AuthError, AuthProvider, AuthUnsupportedError, SessionUser
+
+
+# Cache verified tokens for 5 minutes to avoid hitting Supabase API on every request
+_TOKEN_CACHE: Dict[str, Tuple[dict, float]] = {}
+_TOKEN_CACHE_TTL = 300  # 5 minutes
 
 
 def _extract_bearer_token(request: Request) -> str | None:
@@ -58,15 +65,40 @@ class SupabaseAuthProvider(AuthProvider):
         if not token:
             return None
 
-        try:
-            response = self._client.get("/user", headers={"authorization": f"Bearer {token}"})
-        except httpx.HTTPError as exc:  # pragma: no cover - network failure
-            raise AuthError(f"Supabase request failed: {exc}") from exc
+        # Check cache first to avoid hitting Supabase API on every request
+        now = time.time()
+        if token in _TOKEN_CACHE:
+            cached_data, cached_time = _TOKEN_CACHE[token]
+            if now - cached_time < _TOKEN_CACHE_TTL:
+                # Use cached data
+                data = cached_data
+            else:
+                # Cache expired, remove it
+                del _TOKEN_CACHE[token]
+                data = None
+        else:
+            data = None
 
-        if response.status_code >= 400:
-            return None
+        # If not cached or expired, verify with Supabase
+        if data is None:
+            try:
+                response = self._client.get("/user", headers={"authorization": f"Bearer {token}"})
+            except httpx.HTTPError as exc:  # pragma: no cover - network failure
+                raise AuthError(f"Supabase request failed: {exc}") from exc
 
-        data = response.json()
+            if response.status_code >= 400:
+                return None
+
+            data = response.json()
+            # Cache the result
+            _TOKEN_CACHE[token] = (data, now)
+            
+            # Clean up old cache entries periodically (keep cache size manageable)
+            if len(_TOKEN_CACHE) > 100:
+                expired = [k for k, (_, t) in _TOKEN_CACHE.items() if now - t >= _TOKEN_CACHE_TTL]
+                for k in expired:
+                    del _TOKEN_CACHE[k]
+
         user_id = data.get("id")
         email = data.get("email")
         if not email or not user_id:

@@ -208,12 +208,9 @@ export function QuestionsSection({
     });
   }, []);
   
-  // Notify parent of checked changes OUTSIDE the state setter (after state updates)
-  useEffect(() => {
-    if (hasInitialized) {
-      onCheckedChange?.(Array.from(checkedQuestions));
-    }
-  }, [checkedQuestions, hasInitialized, onCheckedChange]);
+  // NOTE: We no longer auto-notify parent of checked changes to avoid infinite loops.
+  // The checked state is local to this component until lock is pressed.
+  // Parent will get the final state when lock is pressed via onLockChange.
 
   const handleLockIn = useCallback(() => {
     // Remove unanswered questions from checked state
