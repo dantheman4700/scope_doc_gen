@@ -332,11 +332,26 @@ class JobRegistry:
                         .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
                         .first()
                     )
-                    if artifact:
-                        # Read from storage
-                        local_path = Path(DATA_ROOT) / "projects" / str(run.project_id) / "output" / Path(artifact.path).name
+                    if artifact and artifact.path:
+                        # Use same path resolution as _ensure_artifact_local in runs.py
+                        project_id_str = str(run.project_id)
+                        paths = ensure_project_structure(DATA_ROOT, project_id_str)
+                        local_path = (paths.root / artifact.path).resolve()
+                        local_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        # Download from storage if file doesn't exist locally
+                        if not local_path.exists() and self._use_remote_storage:
+                            try:
+                                storage_key = self._storage_key(project_id_str, artifact.path)
+                                LOGGER.info(f"Downloading artifact from storage: {storage_key}")
+                                self._storage.download_to_path(storage_key, local_path)
+                            except Exception as download_exc:
+                                LOGGER.warning(f"Failed to download artifact from storage: {download_exc}")
+                        
                         if local_path.exists():
                             original_markdown = local_path.read_text(encoding="utf-8")
+                        else:
+                            LOGGER.error(f"Artifact file not found at {local_path} (artifact.path={artifact.path})")
                 
                 if not original_markdown:
                     raise ValueError("No original markdown found")

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { ChevronDown, ChevronRight, Check, Lock, Plus, Send, Loader2 } from "lucide-react";
 
 interface Question {
@@ -19,6 +19,9 @@ interface QuestionsSectionProps {
   isGeneratingMore?: boolean;
   isGeneratingQuestions?: boolean; // True when initial question generation is in progress
   onLockChange?: (locked: boolean) => void; // Callback when lock state changes
+  onCheckedChange?: (checked: number[]) => void; // Callback when checked questions change
+  initialLocked?: boolean; // Initial lock state from saved state
+  initialChecked?: number[]; // Initial checked questions from saved state
   disabled?: boolean;
 }
 
@@ -135,12 +138,25 @@ export function QuestionsSection({
   isGeneratingMore,
   isGeneratingQuestions,
   onLockChange,
+  onCheckedChange,
+  initialLocked = false,
+  initialChecked = [],
   disabled,
 }: QuestionsSectionProps) {
   const [isExpanded, setIsExpanded] = useState(false); // Collapsed by default
-  const [isLockedIn, setIsLockedIn] = useState(false);
+  const [isLockedIn, setIsLockedIn] = useState(initialLocked);
   const [expandedQuestions, setExpandedQuestions] = useState<Set<number>>(new Set()); // All collapsed by default
-  const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(new Set());
+  const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(new Set(initialChecked));
+
+  // Sync initialLocked prop to state when it changes (after parent loads saved state)
+  useEffect(() => {
+    setIsLockedIn(initialLocked);
+  }, [initialLocked]);
+
+  // Sync initialChecked prop to state when it changes
+  useEffect(() => {
+    setCheckedQuestions(new Set(initialChecked));
+  }, [initialChecked]);
 
   // Sort questions: unchecked first, then checked
   const sortedQuestionIndices = useMemo(() => {
@@ -182,9 +198,11 @@ export function QuestionsSection({
           return newExp;
         });
       }
+      // Notify parent of checked state change
+      onCheckedChange?.(Array.from(next));
       return next;
     });
-  }, []);
+  }, [onCheckedChange]);
 
   const handleLockIn = useCallback(() => {
     // Remove unanswered questions from checked state

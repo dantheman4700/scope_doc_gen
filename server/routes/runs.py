@@ -6,7 +6,7 @@ import io
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -86,6 +86,7 @@ class RunStatusResponse(BaseModel):
     google_doc_url: Optional[str] = None
     google_doc_id: Optional[str] = None
     document_title: Optional[str] = None  # Extracted H1 from markdown
+    questions_state: Optional[Dict[str, Any]] = None  # Persisted questions answers and lock state
 
 
 class RunStepResponse(BaseModel):
@@ -222,6 +223,9 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
             # Extract document title from markdown H1
             document_title = _extract_document_title(artifact.path, str(run.project_id))
     
+    # Extract questions state from params
+    questions_state = (run.params or {}).get("questions_state")
+    
     return RunStatusResponse(
         id=run.id,
         project_id=str(run.project_id),
@@ -243,6 +247,7 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
         google_doc_url=google_doc_url,
         google_doc_id=google_doc_id,
         document_title=document_title,
+        questions_state=questions_state,
     )
 
 
@@ -870,6 +875,50 @@ async def save_run_markdown(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save markdown: {exc}"
         )
+
+
+class SaveQuestionsStateRequest(BaseModel):
+    expert_answers: Dict[str, str] = Field(default_factory=dict)
+    client_answers: Dict[str, str] = Field(default_factory=dict)
+    expert_locked: bool = False
+    client_locked: bool = False
+    checked_expert: List[int] = Field(default_factory=list)
+    checked_client: List[int] = Field(default_factory=list)
+
+
+@run_router.post("/{run_id}/save-questions-state")
+async def save_questions_state(
+    run_id: UUID,
+    request: SaveQuestionsStateRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Save the questions answers and lock state for a run.
+    This persists across page reloads.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    # Store questions state in run params
+    params = dict(run.params or {})
+    params["questions_state"] = {
+        "expert_answers": request.expert_answers,
+        "client_answers": request.client_answers,
+        "expert_locked": request.expert_locked,
+        "client_locked": request.client_locked,
+        "checked_expert": request.checked_expert,
+        "checked_client": request.checked_client,
+    }
+    run.params = params
+    flag_modified(run, "params")
+    
+    db.add(run)
+    db.commit()
+    
+    return {"success": True, "message": "Questions state saved"}
 
 
 @run_router.get("/{run_id}/download-docx")

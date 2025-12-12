@@ -1173,15 +1173,20 @@ Please generate the improved version of the scope document, incorporating the an
     try:
         # Use streaming for long operations with extended thinking
         result_text = ""
-        with client.messages.stream(
-            model=CLAUDE_MODEL,
-            max_tokens=MAX_TOKENS,
-            temperature=1,  # Must be 1 when thinking is enabled
-            thinking={"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=tools,
-        ) as stream:
+        
+        # Build kwargs without tools if not needed (Anthropic API rejects tools=None)
+        stream_kwargs = {
+            "model": CLAUDE_MODEL,
+            "max_tokens": MAX_TOKENS,
+            "temperature": 1,  # Must be 1 when thinking is enabled
+            "thinking": {"type": "enabled", "budget_tokens": CLAUDE_THINKING_BUDGET},
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if tools:
+            stream_kwargs["tools"] = tools
+        
+        with client.messages.stream(**stream_kwargs) as stream:
             for event in stream:
                 # Collect text from text delta events
                 if hasattr(event, 'type') and event.type == 'content_block_delta':

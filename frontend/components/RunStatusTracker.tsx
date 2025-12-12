@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectFile, RunFeedback, RunQuestions, RunStep, RunSummary, RunVersion } from "@/types/backend";
 import { useToast } from "@/components/ui/use-toast";
@@ -84,6 +84,10 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
   const [clientAnswers, setClientAnswers] = useState<Record<number, string>>({});
   const [expertLocked, setExpertLocked] = useState<boolean>(false);
   const [clientLocked, setClientLocked] = useState<boolean>(false);
+  const [checkedExpert, setCheckedExpert] = useState<number[]>([]);
+  const [checkedClient, setCheckedClient] = useState<number[]>([]);
+  const [questionsStateLoaded, setQuestionsStateLoaded] = useState<boolean>(false);
+  const skipNextSaveRef = useRef<boolean>(true); // Skip first save after loading to prevent overwriting
   const [isSubmittingQuickRegen, setIsSubmittingQuickRegen] = useState<boolean>(false);
   const [quickRegenText, setQuickRegenText] = useState<string>("");
   const [regenJobId, setRegenJobId] = useState<string | null>(null);
@@ -114,6 +118,98 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
 
   // Recompute included IDs when run changes
   const includedFileIdSet = useMemo(() => new Set(run.included_file_ids ?? []), [run.included_file_ids]);
+
+  // Initialize questions state from saved state on mount
+  useEffect(() => {
+    if (questionsStateLoaded) return;
+    
+    const savedState = run.questions_state;
+    if (savedState) {
+      // Convert string keys back to number keys for answers
+      if (savedState.expert_answers) {
+        const expertAns: Record<number, string> = {};
+        Object.entries(savedState.expert_answers).forEach(([k, v]) => {
+          expertAns[parseInt(k, 10)] = v;
+        });
+        setExpertAnswers(expertAns);
+      }
+      if (savedState.client_answers) {
+        const clientAns: Record<number, string> = {};
+        Object.entries(savedState.client_answers).forEach(([k, v]) => {
+          clientAns[parseInt(k, 10)] = v;
+        });
+        setClientAnswers(clientAns);
+      }
+      if (savedState.expert_locked) setExpertLocked(true);
+      if (savedState.client_locked) setClientLocked(true);
+      if (savedState.checked_expert) setCheckedExpert(savedState.checked_expert);
+      if (savedState.checked_client) setCheckedClient(savedState.checked_client);
+    }
+    // Skip the next auto-save to prevent overwriting the state we just loaded
+    skipNextSaveRef.current = true;
+    setQuestionsStateLoaded(true);
+  }, [run.questions_state, questionsStateLoaded]);
+
+  // Auto-save questions state when it changes (debounced)
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const saveQuestionsState = useCallback(async () => {
+    if (!questionsStateLoaded) return;
+    
+    try {
+      // Convert number keys to string keys for JSON
+      const expertAnsStr: Record<string, string> = {};
+      Object.entries(expertAnswers).forEach(([k, v]) => {
+        expertAnsStr[k] = v;
+      });
+      const clientAnsStr: Record<string, string> = {};
+      Object.entries(clientAnswers).forEach(([k, v]) => {
+        clientAnsStr[k] = v;
+      });
+      
+      await fetch(`/api/runs/${run.id}/save-questions-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expert_answers: expertAnsStr,
+          client_answers: clientAnsStr,
+          expert_locked: expertLocked,
+          client_locked: clientLocked,
+          checked_expert: checkedExpert,
+          checked_client: checkedClient,
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to save questions state:", err);
+    }
+  }, [run.id, expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient, questionsStateLoaded]);
+
+  // Debounced auto-save when questions state changes
+  useEffect(() => {
+    if (!questionsStateLoaded) return;
+    
+    // Skip the first save after loading to prevent overwriting saved state
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return;
+    }
+    
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    
+    // Save after 1 second of no changes
+    saveTimeoutRef.current = setTimeout(() => {
+      saveQuestionsState();
+    }, 1000);
+    
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [expertAnswers, clientAnswers, expertLocked, clientLocked, checkedExpert, checkedClient, questionsStateLoaded, saveQuestionsState]);
   
   // Check if questions are currently being generated
   const isQuestionsStepRunning = useMemo(() => {
@@ -1268,6 +1364,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }}
               isGeneratingMore={isGeneratingMoreExpert}
               onLockChange={(locked) => setExpertLocked(locked)}
+              onCheckedChange={(checked) => setCheckedExpert(checked)}
+              initialLocked={expertLocked}
+              initialChecked={checkedExpert}
             />
             
             <QuestionsSection
@@ -1312,6 +1411,9 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
               }}
               isGeneratingMore={isGeneratingMoreClient}
               onLockChange={(locked) => setClientLocked(locked)}
+              onCheckedChange={(checked) => setCheckedClient(checked)}
+              initialLocked={clientLocked}
+              initialChecked={checkedClient}
             />
           </div>
         ) : (

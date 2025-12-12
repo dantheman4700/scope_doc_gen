@@ -67,6 +67,14 @@ export interface RunSummary {
   google_doc_url?: string | null;
   google_doc_id?: string | null;
   document_title?: string | null;
+  questions_state?: {
+    expert_answers?: Record<string, string>;
+    client_answers?: Record<string, string>;
+    expert_locked?: boolean;
+    client_locked?: boolean;
+    checked_expert?: number[];
+    checked_client?: number[];
+  } | null;
 }
 
 export interface RunStep {
