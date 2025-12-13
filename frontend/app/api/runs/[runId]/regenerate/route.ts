@@ -16,12 +16,13 @@ interface RegenerateResponse {
 
 export async function POST(
   request: Request,
-  { params }: { params: { runId: string } }
+  { params }: { params: Promise<{ runId: string }> }
 ) {
+  const { runId } = await params;
   const body = (await request.json()) as RegenerateRequest;
   
   const response = await apiFetchJson<RegenerateResponse>(
-    `/runs/${params.runId}/regenerate`,
+    `/runs/${runId}/regenerate`,
     {
       method: "POST",
       body: JSON.stringify(body),
@@ -30,4 +31,3 @@ export async function POST(
 
   return NextResponse.json(response.data ?? {}, { status: response.status });
 }
-

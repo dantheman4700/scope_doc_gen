@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -552,6 +553,50 @@ async def toggle_file_mode(
     db.refresh(record)
 
     return ProjectFileResponse.model_validate(record)
+
+
+@router.get("/{file_id}/download")
+async def download_file(
+    project_id: UUID,
+    file_id: UUID,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+):
+    """Download a file's content."""
+    project = _get_project(db, project_id)
+    record = (
+        db.query(models.ProjectFile)
+        .filter(models.ProjectFile.project_id == project.id, models.ProjectFile.id == file_id)
+        .one_or_none()
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    storage_key = _storage_key(str(project.id), record.path)
+
+    with TemporaryDirectory() as tmpdir:
+        destination = Path(tmpdir) / record.filename
+        try:
+            await run_in_threadpool(storage.download_to_path, storage_key, destination)
+            contents = destination.read_bytes()
+        except Exception as exc:
+            LOGGER.error("Unable to download file %s: %s", record.filename, exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to download file"
+            )
+
+    # Determine content type
+    content_type = record.media_type or "application/octet-stream"
+    
+    return StreamingResponse(
+        io.BytesIO(contents),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{record.filename}"',
+            "Content-Length": str(len(contents)),
+        }
+    )
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

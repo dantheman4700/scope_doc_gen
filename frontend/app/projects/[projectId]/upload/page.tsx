@@ -2,7 +2,7 @@ import { requireUser } from "@/lib/auth";
 import { UploadFileForm } from "@/components/UploadFileForm";
 
 interface UploadPageProps {
-  params: { projectId: string };
+  params: Promise<{ projectId: string }>;
 }
 
 export const metadata = {
@@ -10,13 +10,13 @@ export const metadata = {
 };
 
 export default async function UploadPage({ params }: UploadPageProps) {
+  const { projectId } = await params;
   await requireUser();
 
   return (
     <div className="card" style={{ maxWidth: 480 }}>
       <h1>Upload files</h1>
-      <UploadFileForm projectId={params.projectId} />
+      <UploadFileForm projectId={projectId} />
     </div>
   );
 }
-

@@ -2,15 +2,15 @@ import { NextResponse } from "next/server";
 
 import { apiFetchJson } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { projectId: string };
-}
 
-export async function POST(request: Request, { params }: RouteParams) {
+
+export async function POST(request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
   const payload = await request.json();
 
   const response = await apiFetchJson<Record<string, unknown>>(
-    `/projects/${params.projectId}/runs`,
+    `/projects/${projectId}/runs`,
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -21,8 +21,10 @@ export async function POST(request: Request, { params }: RouteParams) {
   return NextResponse.json(response.data ?? {}, { status: response.status });
 }
 
-export async function GET(_request: Request, { params }: RouteParams) {
-  const response = await apiFetchJson(`/projects/${params.projectId}/runs`, {
+export async function GET(_request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
+  const response = await apiFetchJson(`/projects/${projectId}/runs`, {
     throwIfUnauthorized: false
   });
 

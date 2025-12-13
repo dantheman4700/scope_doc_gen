@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { apiFetch } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function POST(request: Request, { params }: RouteParams) {
+
+export async function POST(request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   try {
-    const backendResponse = await apiFetch(`/runs/${params.runId}/check-ambiguity`, {
+    const backendResponse = await apiFetch(`/runs/${runId}/check-ambiguity`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

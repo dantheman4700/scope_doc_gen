@@ -1,14 +1,14 @@
 import { apiFetch } from "@/lib/fetch";
 import { NextResponse } from "next/server";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function POST(request: Request, { params }: RouteParams) {
+
+export async function POST(request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   const body = await request.json().catch(() => ({}));
   
-  const backendResponse = await apiFetch(`/runs/${params.runId}/regenerate-graphic`, {
+  const backendResponse = await apiFetch(`/runs/${runId}/regenerate-graphic`, {
     method: "POST",
     body: JSON.stringify(body),
     headers: { "Content-Type": "application/json" },

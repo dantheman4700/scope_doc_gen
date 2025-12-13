@@ -3,12 +3,12 @@ import { NextResponse } from "next/server";
 import { apiFetchJson } from "@/lib/fetch";
 import type { Project } from "@/types/backend";
 
-interface RouteParams {
-  params: { projectId: string };
-}
 
-export async function GET(_request: Request, { params }: RouteParams) {
-  const response = await apiFetchJson<Project>(`/projects/${params.projectId}`, {
+
+export async function GET(_request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
+  const response = await apiFetchJson<Project>(`/projects/${projectId}`, {
     throwIfUnauthorized: false
   });
 

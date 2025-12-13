@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 
 import { apiFetch } from "@/lib/fetch";
 
-interface RouteContext {
-  params: { artifactId: string };
-}
-
-export async function GET(_request: Request, { params }: RouteContext) {
-  const backendResponse = await apiFetch(`/artifacts/${params.artifactId}/download`, {
+export async function GET(
+  _request: Request, 
+  { params }: { params: Promise<{ artifactId: string }> }
+) {
+  const { artifactId } = await params;
+  
+  const backendResponse = await apiFetch(`/artifacts/${artifactId}/download`, {
     method: "GET",
     throwIfUnauthorized: false,
     redirect: "manual"
@@ -48,4 +49,3 @@ export async function GET(_request: Request, { params }: RouteContext) {
     headers
   });
 }
-

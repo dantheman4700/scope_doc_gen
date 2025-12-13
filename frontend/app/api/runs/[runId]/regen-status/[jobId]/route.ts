@@ -2,10 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { apiFetchJson } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string; jobId: string };
-}
-
 interface RegenJobStatus {
   id: string;
   run_id: string;
@@ -18,9 +14,14 @@ interface RegenJobStatus {
   error?: string;
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(
+  _request: NextRequest, 
+  { params }: { params: Promise<{ runId: string; jobId: string }> }
+) {
+  const { runId, jobId } = await params;
+
   const response = await apiFetchJson<RegenJobStatus>(
-    `/runs/${params.runId}/regen-status/${params.jobId}`,
+    `/runs/${runId}/regen-status/${jobId}`,
     { throwIfUnauthorized: false }
   );
 
@@ -30,4 +31,3 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
   return NextResponse.json(response.data, { status: response.status });
 }
-

@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 
 import { apiFetchJson } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function POST(_request: Request, { params }: RouteParams) {
-  const response = await apiFetchJson(`/runs/${params.runId}/generate-questions`, {
+
+export async function POST(_request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
+  const response = await apiFetchJson(`/runs/${runId}/generate-questions`, {
     method: "POST",
     throwIfUnauthorized: false
   });

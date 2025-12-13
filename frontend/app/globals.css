@@ -251,3 +251,25 @@
 .animate-slide-up {
   animation: slide-up 0.3s ease-out;
 }
+
+/* DOCX Preview Styles */
+.docx-container {
+  background: white;
+  color: black;
+}
+
+.docx-container .docx-wrapper {
+  background: white !important;
+  padding: 1rem;
+}
+
+/* react-pdf styles */
+.react-pdf__Page {
+  margin: 0 auto;
+}
+
+.react-pdf__Page__canvas {
+  margin: 0 auto;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+}

@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function GET(_request: Request, { params }: RouteParams) {
+
+export async function GET(_request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8010";
   
   try {
-    const response = await fetch(`${backendUrl}/runs/${params.runId}/solution-graphic`, {
+    const response = await fetch(`${backendUrl}/runs/${runId}/solution-graphic`, {
       headers: {
         "Accept": "image/*",
       },

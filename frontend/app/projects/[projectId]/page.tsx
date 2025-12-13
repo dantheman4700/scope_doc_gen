@@ -8,7 +8,7 @@ import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
 export const revalidate = 0;
 
 interface ProjectDetailPageProps {
-  params: { projectId: string };
+  params: Promise<{ projectId: string }>;
 }
 
 export const metadata = {
@@ -16,16 +16,17 @@ export const metadata = {
 };
 
 export default async function ProjectDetailPage({ params }: ProjectDetailPageProps) {
+  const { projectId } = await params;
   await requireUser();
-  const project = await fetchProject(params.projectId);
+  const project = await fetchProject(projectId);
   if (!project) {
     notFound();
   }
-  const projectId = project.id;
+  const projId = project.id;
 
   const [files, runs] = await Promise.all([
-    fetchProjectFiles(projectId),
-    fetchProjectRuns(projectId)
+    fetchProjectFiles(projId),
+    fetchProjectRuns(projId)
   ]);
   
   return (

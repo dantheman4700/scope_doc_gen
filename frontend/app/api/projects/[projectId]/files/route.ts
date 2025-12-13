@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 
 import { apiFetch, apiFetchJson } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { projectId: string };
-}
 
-export async function POST(request: Request, { params }: RouteParams) {
+
+export async function POST(request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
   const contentType = request.headers.get("content-type");
   if (!contentType?.toLowerCase().startsWith("multipart/form-data")) {
     return NextResponse.json({ detail: "multipart/form-data body required" }, { status: 400 });
@@ -17,7 +17,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   let backendResponse: Response;
   try {
-    backendResponse = await apiFetch(`/projects/${params.projectId}/files/`, {
+    backendResponse = await apiFetch(`/projects/${projectId}/files/`, {
       method: "POST",
       body: request.body,
       headers,
@@ -34,14 +34,16 @@ export async function POST(request: Request, { params }: RouteParams) {
   return NextResponse.json(payload, { status: backendResponse.status });
 }
 
-export async function DELETE(request: Request, { params }: RouteParams) {
+export async function DELETE(request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
   const url = new URL(request.url);
   const fileId = url.searchParams.get("fileId");
   if (!fileId) {
     return NextResponse.json({ detail: "fileId query parameter required" }, { status: 400 });
   }
 
-  const backendResponse = await apiFetch(`/projects/${params.projectId}/files/${fileId}`, {
+  const backendResponse = await apiFetch(`/projects/${projectId}/files/${fileId}`, {
     method: "DELETE",
     throwIfUnauthorized: false
   });
@@ -54,8 +56,10 @@ export async function DELETE(request: Request, { params }: RouteParams) {
   return new NextResponse(null, { status: 204 });
 }
 
-export async function GET(_request: Request, { params }: RouteParams) {
-  const response = await apiFetchJson(`/projects/${params.projectId}/files/`, {
+export async function GET(_request: Request, { params }: { params: Promise<{projectId: string}> }) {
+  const { projectId } = await params;
+
+  const response = await apiFetchJson(`/projects/${projectId}/files/`, {
     throwIfUnauthorized: false
   });
 

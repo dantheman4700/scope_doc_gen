@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import { apiFetch } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function POST(request: Request, { params }: RouteParams) {
+
+export async function POST(request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   try {
     const body = await request.json();
     
-    const backendResponse = await apiFetch(`/runs/${params.runId}/generate-more-questions`, {
+    const backendResponse = await apiFetch(`/runs/${runId}/generate-more-questions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

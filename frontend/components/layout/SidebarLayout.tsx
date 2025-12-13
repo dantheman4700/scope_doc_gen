@@ -15,6 +15,9 @@ interface SidebarLayoutProps {
 // Pages that should NOT show the sidebar
 const noSidebarPaths = ["/login", "/register"];
 
+// Pages that need full viewport height without padding (e.g., editor)
+const fullViewportPaths = ["/editor"];
+
 export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -23,9 +26,13 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   
   const showSidebar = !noSidebarPaths.includes(pathname);
   
+  // Check if this is a full viewport page (like editor) that needs no padding
+  const isFullViewport = fullViewportPaths.some(path => pathname.endsWith(path));
+  
   // Show right sidebar on run pages and project detail pages (not /projects home)
+  // But NOT on the editor page which has its own layout
   const isProjectsHome = pathname === "/projects" || pathname === "/projects/";
-  const showRightSidebar = !isProjectsHome && (
+  const showRightSidebar = !isProjectsHome && !isFullViewport && (
     pathname.startsWith("/runs/") || 
     (pathname.startsWith("/projects/") && pathname !== "/projects" && pathname !== "/projects/")
   );
@@ -80,11 +87,12 @@ export function SidebarLayout({ children, user }: SidebarLayoutProps) {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className={cn("flex", isFullViewport ? "h-screen overflow-hidden" : "min-h-screen")}>
       <Sidebar user={user} />
       <main
         className={cn(
-          "flex-1 transition-all duration-300 p-6",
+          "flex-1 transition-all duration-300",
+          isFullViewport ? "h-screen overflow-hidden" : "p-6",
           mounted && sidebarCollapsed ? "ml-16" : "ml-64",
           showRightSidebar && (mounted && rightSidebarCollapsed ? "mr-10" : "mr-52")
         )}

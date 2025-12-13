@@ -9,7 +9,7 @@ export async function POST(request: Request, { params }: { params: Promise<{runI
   try {
     const body = await request.json();
     
-    const backendResponse = await apiFetch(`/runs/${runId}/save-markdown`, {
+    const backendResponse = await apiFetch(`/runs/${runId}/apply-edit`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -20,11 +20,10 @@ export async function POST(request: Request, { params }: { params: Promise<{runI
     const data = await backendResponse.json();
     return NextResponse.json(data, { status: backendResponse.status });
   } catch (error) {
-    console.error("Failed to save markdown:", error);
+    console.error("Failed to apply edit:", error);
     return NextResponse.json(
-      { error: "Failed to save markdown" },
+      { error: "Failed to apply edit" },
       { status: 500 }
     );
   }
 }
-

@@ -9,7 +9,7 @@ import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
 export const revalidate = 0;
 
 interface RunPageProps {
-  params: { runId: string };
+  params: Promise<{ runId: string }>;
 }
 
 export const metadata = {
@@ -17,9 +17,10 @@ export const metadata = {
 };
 
 export default async function RunDetailPage({ params }: RunPageProps) {
+  const { runId } = await params;
   await requireUser();
 
-  const runResponse = await apiFetchJson<RunSummary>(`/runs/${params.runId}`, {
+  const runResponse = await apiFetchJson<RunSummary>(`/runs/${runId}`, {
     throwIfUnauthorized: false
   });
 
@@ -27,7 +28,7 @@ export default async function RunDetailPage({ params }: RunPageProps) {
     notFound();
   }
 
-  const stepsResponse = await apiFetchJson<RunStep[]>(`/runs/${params.runId}/steps`, {
+  const stepsResponse = await apiFetchJson<RunStep[]>(`/runs/${runId}/steps`, {
       throwIfUnauthorized: false
   });
 
@@ -51,14 +52,14 @@ export default async function RunDetailPage({ params }: RunPageProps) {
         items={[
           { label: "Projects", href: "/projects" },
           { label: projectName, href: `/projects/${run.project_id}` },
-          { label: `Run ${params.runId.slice(0, 8)}…` },
+          { label: `Run ${runId.slice(0, 8)}…` },
         ]}
         className="mb-6"
       />
       
       <div className="card">
         <RunStatusTracker
-          runId={params.runId}
+          runId={runId}
           initialRun={run}
           initialSteps={steps}
         />

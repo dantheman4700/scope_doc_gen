@@ -959,6 +959,18 @@ export function RunStatusTracker({ runId, initialRun, initialSteps }: RunStatusT
           {/* Divider */}
           {canExport && <span style={{ color: "#4b5563" }}>|</span>}
 
+          {/* Open in AI Editor - New Cursor-like experience */}
+          <Link
+            href={`/runs/${run.id}/editor`}
+            className="btn-primary"
+            style={{ display: "flex", alignItems: "center", gap: "0.375rem", textDecoration: "none" }}
+          >
+            ✨ Open in AI Editor
+          </Link>
+
+          {/* Divider */}
+          {canExport && <span style={{ color: "#4b5563" }}>|</span>}
+
           {/* Google Docs Export - Primary with clear state indication */}
           <div style={{ display: "flex", gap: "0.25rem" }}>
             <button

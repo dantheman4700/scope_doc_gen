@@ -1,19 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createSupabaseClient } from "@/lib/supabase-client";
-
-const HAS_SUPABASE = Boolean(
-  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+import { createSupabaseClient, hasSupabase } from "@/lib/supabase-client";
 
 export function LogoutButton() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const supabase = useMemo(() => (HAS_SUPABASE ? createSupabaseClient() : null), []);
 
   async function handleLogout() {
     if (busy) {
@@ -23,7 +18,8 @@ export function LogoutButton() {
     setError(null);
 
     try {
-      if (HAS_SUPABASE && supabase) {
+      if (hasSupabase()) {
+        const supabase = createSupabaseClient();
         const { error: signOutError } = await supabase.auth.signOut({ scope: "global" });
         if (signOutError) {
           throw signOutError;

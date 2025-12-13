@@ -3,11 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { createSupabaseClient } from "@/lib/supabase-client";
-
-const HAS_SUPABASE = Boolean(
-  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+import { createSupabaseClient, hasSupabase } from "@/lib/supabase-client";
 
 export function LoginForm() {
   const router = useRouter();
@@ -16,7 +12,9 @@ export function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const supabase = useMemo(() => (HAS_SUPABASE ? createSupabaseClient() : null), []);
+  
+  // Only create Supabase client when actually needed (on submit), not on component mount
+  const getSupabase = () => hasSupabase() ? createSupabaseClient() : null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,7 +22,8 @@ export function LoginForm() {
     setError(null);
 
     try {
-      if (HAS_SUPABASE && supabase) {
+      const supabase = getSupabase();
+      if (supabase) {
         const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
         if (authError) {
           setError(authError.message ?? "Unable to sign in");

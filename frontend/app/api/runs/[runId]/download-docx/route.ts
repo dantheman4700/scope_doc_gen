@@ -2,17 +2,17 @@ import { NextResponse } from "next/server";
 
 import { apiFetch } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string };
-}
 
-export async function GET(request: Request, { params }: RouteParams) {
+
+export async function GET(request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   // Parse version from query string
   const url = new URL(request.url);
   const version = url.searchParams.get("version");
   
   // Build backend URL with optional version param
-  let backendUrl = `/runs/${params.runId}/download-docx`;
+  let backendUrl = `/runs/${runId}/download-docx`;
   if (version) {
     backendUrl += `?version=${version}`;
   }

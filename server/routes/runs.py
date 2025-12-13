@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -1458,7 +1460,7 @@ async def export_run_google_doc(
 class RunVersionResponse(BaseModel):
     id: UUID
     run_id: UUID
-    version_number: int
+    version_number: float
     markdown: Optional[str] = None
     feedback: Optional[dict] = None
     questions_for_expert: Optional[List[str]] = None
@@ -1481,7 +1483,7 @@ class RegenerateRequest(BaseModel):
 
 class RegenerateResponse(BaseModel):
     version_id: UUID
-    version_number: int
+    version_number: float
     message: str
 
 
@@ -1527,7 +1529,7 @@ async def list_run_versions(
 @run_router.get("/{run_id}/versions/{version_number}", response_model=RunVersionResponse)
 async def get_run_version(
     run_id: UUID,
-    version_number: int,
+    version_number: float,
     db: Session = Depends(db_session),
     current_user: SessionUser = Depends(get_current_user),
 ):
@@ -1566,7 +1568,7 @@ class RegenJobStatusResponse(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     version_id: Optional[str] = None
-    version_number: Optional[int] = None
+    version_number: Optional[float] = None
     error: Optional[str] = None
 
 
@@ -1635,4 +1637,221 @@ async def get_regen_job_status(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job does not belong to this run")
     
     return RegenJobStatusResponse(**job.to_dict())
+
+
+# =============================================================================
+# AI Document Chat Endpoints
+# =============================================================================
+
+class ChatRequest(BaseModel):
+    """Request body for chat endpoint."""
+    message: str = Field(..., description="The user's message")
+    conversation_history: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Previous messages in the conversation"
+    )
+    document_content: Optional[str] = Field(
+        None,
+        description="Current document content. If not provided, fetches from latest version."
+    )
+    version: Optional[float] = Field(
+        None,
+        description="Version number to use as context (can be float like 1.1)"
+    )
+    enable_web_search: bool = Field(False, description="Enable Claude web search")
+    use_perplexity: bool = Field(False, description="Use Perplexity for deep research")
+
+
+class ApplyEditRequest(BaseModel):
+    """Request to apply an AI-suggested edit."""
+    old_str: str = Field(..., description="Text to replace")
+    new_str: str = Field(..., description="Replacement text")
+    document_content: str = Field(..., description="Current document content")
+    save_version: bool = Field(True, description="Save as new version after applying")
+
+
+class ApplyEditResponse(BaseModel):
+    """Response after applying an edit."""
+    success: bool
+    new_content: str
+    version_number: Optional[float] = None
+    message: str
+
+
+@run_router.post("/{run_id}/chat")
+async def chat_with_run(
+    run_id: UUID,
+    payload: ChatRequest,
+    db: Session = Depends(db_session),
+    storage: StorageBackend = Depends(get_storage),
+    current_user: SessionUser = Depends(get_current_user),
+):
+    """
+    Stream a chat response for document editing.
+    
+    Returns Server-Sent Events (SSE) with:
+    - event: text - Streaming text content
+    - event: tool - Tool call from AI (e.g., str_replace_edit)
+    - event: error - Error message
+    - event: done - Stream complete
+    """
+    from server.services.chat_service import get_chat_service, ChatMessage
+    
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    # Get document content
+    document_content = payload.document_content
+    if not document_content:
+        # Try to get from version or artifact
+        if payload.version and payload.version > 1:
+            run_version = (
+                db.query(models.RunVersion)
+                .filter(
+                    models.RunVersion.run_id == run_id,
+                    models.RunVersion.version_number == payload.version
+                )
+                .first()
+            )
+            if run_version and run_version.markdown:
+                document_content = run_version.markdown
+        
+        if not document_content:
+            # Fall back to original artifact
+            artifact = (
+                db.query(models.Artifact)
+                .filter(models.Artifact.run_id == run_id, models.Artifact.kind == "rendered_doc")
+                .order_by(models.Artifact.created_at.desc())
+                .first()
+            )
+            if artifact:
+                project_id_str = str(run.project_id)
+                try:
+                    local_path = await _ensure_artifact_local(project_id_str, artifact, storage)
+                    document_content = local_path.read_text(encoding="utf-8")
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to load document: {exc}"
+                    )
+    
+    if not document_content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No document content available"
+        )
+    
+    # Build run context
+    project = db.get(models.Project, run.project_id)
+    run_context = {
+        "project_name": project.name if project else None,
+        "template_type": run.template_type,
+        "run_id": str(run_id),
+    }
+    
+    # Convert conversation history
+    history = [
+        ChatMessage(role=msg.get("role", "user"), content=msg.get("content", ""))
+        for msg in payload.conversation_history
+    ]
+    
+    chat_service = get_chat_service()
+    
+    async def generate_sse():
+        """Generate SSE events from chat stream."""
+        try:
+            async for event in chat_service.stream_chat(
+                message=payload.message,
+                document_content=document_content,
+                conversation_history=history,
+                run_context=run_context,
+                enable_web_search=payload.enable_web_search,
+                use_perplexity=payload.use_perplexity,
+            ):
+                yield event.to_sse()
+                # Small delay to prevent overwhelming the client
+                await asyncio.sleep(0.01)
+        except Exception as exc:
+            logger.exception(f"Chat stream error: {exc}")
+            error_event = f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield error_event
+    
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@run_router.post("/{run_id}/apply-edit", response_model=ApplyEditResponse)
+async def apply_edit_to_run(
+    run_id: UUID,
+    payload: ApplyEditRequest,
+    db: Session = Depends(db_session),
+    current_user: SessionUser = Depends(get_current_user),
+):
+    """
+    Apply an AI-suggested edit to the document.
+    
+    Optionally saves as a new version.
+    """
+    from server.services.chat_service import get_chat_service
+    
+    run = db.get(models.Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    chat_service = get_chat_service()
+    new_content, success = chat_service.apply_edit(
+        document=payload.document_content,
+        old_str=payload.old_str,
+        new_str=payload.new_str,
+    )
+    
+    if not success:
+        return ApplyEditResponse(
+            success=False,
+            new_content=payload.document_content,
+            message="Edit failed: text not found in document"
+        )
+    
+    version_number = None
+    if payload.save_version:
+        # Find the latest version number
+        latest_version = (
+            db.query(models.RunVersion)
+            .filter(models.RunVersion.run_id == run_id)
+            .order_by(models.RunVersion.version_number.desc())
+            .first()
+        )
+        
+        if latest_version:
+            base_version = int(latest_version.version_number)
+            version_number = round(latest_version.version_number + 0.1, 1)
+        else:
+            base_version = 1
+            version_number = 1.1
+        
+        # Create new version
+        new_version = models.RunVersion(
+            run_id=run_id,
+            version_number=version_number,
+            markdown=new_content,
+            feedback={"edit_type": "ai_suggestion"},
+            regen_context=f"AI edit: replaced '{payload.old_str[:50]}...' with '{payload.new_str[:50]}...'"
+        )
+        db.add(new_version)
+        db.commit()
+    
+    return ApplyEditResponse(
+        success=True,
+        new_content=new_content,
+        version_number=version_number,
+        message=f"Edit applied successfully{' and saved as v' + str(version_number) if version_number else ''}"
+    )
 

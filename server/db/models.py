@@ -10,6 +10,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -159,7 +160,7 @@ class RunVersion(Base):
 
     id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     run_id: Mapped[UUID_t] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
-    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    version_number: Mapped[float] = mapped_column(Float, nullable=False)
     markdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     feedback: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     questions_for_expert: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)

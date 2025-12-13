@@ -2,9 +2,7 @@ import { NextResponse } from "next/server";
 
 import { apiFetchJson } from "@/lib/fetch";
 
-interface RouteParams {
-  params: { runId: string };
-}
+
 
 interface ExportResponse {
   doc_id?: string;
@@ -14,7 +12,9 @@ interface ExportResponse {
   version?: number;
 }
 
-export async function POST(request: Request, { params }: RouteParams) {
+export async function POST(request: Request, { params }: { params: Promise<{runId: string}> }) {
+  const { runId } = await params;
+
   // Pass through query parameters (force, version)
   const url = new URL(request.url);
   const queryParams = new URLSearchParams();
@@ -30,7 +30,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
   
   const queryString = queryParams.toString();
-  const backendUrl = `/runs/${params.runId}/export-google-doc${queryString ? `?${queryString}` : ""}`;
+  const backendUrl = `/runs/${runId}/export-google-doc${queryString ? `?${queryString}` : ""}`;
   
   const response = await apiFetchJson<ExportResponse>(backendUrl, {
     method: "POST",
