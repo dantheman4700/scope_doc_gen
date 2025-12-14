@@ -135,7 +135,76 @@ DOCUMENT_TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "calculate",
+        "description": "Perform mathematical calculations to validate numbers, budgets, timelines, or other quantitative data in the document. Use this when you need to verify calculations or do math.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "A mathematical expression to evaluate (e.g., '100 * 1.5 + 50', '365 * 24', '(500000 * 0.15) / 12')",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this calculation represents or why it's being done.",
+                },
+            },
+            "required": ["expression"],
+        },
+    },
 ]
+
+
+def safe_eval_math(expression: str) -> tuple[float | None, str | None]:
+    """
+    Safely evaluate a mathematical expression.
+    Returns (result, error) tuple.
+    """
+    import ast
+    import operator
+    
+    # Supported operators
+    operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+    
+    def _eval(node):
+        if isinstance(node, ast.Constant):  # Numbers
+            return node.value
+        elif isinstance(node, ast.BinOp):  # Binary operations
+            left = _eval(node.left)
+            right = _eval(node.right)
+            op = operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op(left, right)
+        elif isinstance(node, ast.UnaryOp):  # Unary operations
+            operand = _eval(node.operand)
+            op = operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op(operand)
+        elif isinstance(node, ast.Expression):
+            return _eval(node.body)
+        else:
+            raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+    
+    try:
+        # Parse the expression
+        tree = ast.parse(expression, mode='eval')
+        result = _eval(tree)
+        return result, None
+    except Exception as e:
+        return None, str(e)
 
 
 class DocumentChatService:

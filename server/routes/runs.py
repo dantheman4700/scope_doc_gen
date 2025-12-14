@@ -879,6 +879,307 @@ async def save_run_markdown(
         )
 
 
+class AutoSaveRequest(BaseModel):
+    """Request for auto-saving as a sub-version."""
+    markdown: str = Field(..., description="The markdown content to auto-save")
+
+
+@run_router.post("/{run_id}/auto-save")
+async def auto_save_subversion(
+    run_id: UUID,
+    request: AutoSaveRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Auto-save as a sub-version without creating a major version.
+    Used when user accepts AI edits - saves progress without committing.
+    """
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    # Find the latest version to determine the major version
+    latest_version = (
+        db.query(models.RunVersion)
+        .filter(models.RunVersion.run_id == run_id)
+        .order_by(models.RunVersion.version_number.desc())
+        .first()
+    )
+
+    if latest_version:
+        current_major = int(latest_version.version_number)
+        current_sub = latest_version.version_number
+    else:
+        current_major = 1
+        current_sub = 1.0
+
+    # Calculate next sub-version
+    if current_sub == current_major:
+        next_version = current_major + 0.1
+    else:
+        next_version = current_sub + 0.1
+    
+    next_version = round(next_version, 1)
+
+    try:
+        new_version = models.RunVersion(
+            run_id=run_id,
+            version_number=next_version,
+            markdown=request.markdown,
+            feedback={"auto_save": True, "parent_major": current_major},
+            regen_context="Auto-saved after AI edit",
+        )
+        db.add(new_version)
+        db.commit()
+        db.refresh(new_version)
+
+        return {
+            "success": True,
+            "version_number": next_version,
+            "is_subversion": True,
+            "message": f"Auto-saved as v{next_version}",
+        }
+    except Exception as exc:
+        logger.exception(f"Failed to auto-save for run {run_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to auto-save: {exc}"
+        )
+
+
+class CommitVersionRequest(BaseModel):
+    """Request for committing as a new major version."""
+    markdown: str = Field(..., description="The markdown content to commit")
+    base_version: int = Field(..., description="The current major version number")
+
+
+@run_router.post("/{run_id}/commit-version")
+async def commit_version(
+    run_id: UUID,
+    request: CommitVersionRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Commit all changes as a new major version.
+    Creates version N+1 from the current major version N.
+    """
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    # The next major version is base_version + 1
+    next_major = request.base_version + 1
+
+    # Check if this major version already exists
+    existing = (
+        db.query(models.RunVersion)
+        .filter(
+            models.RunVersion.run_id == run_id,
+            models.RunVersion.version_number == next_major
+        )
+        .first()
+    )
+    
+    if existing:
+        # Update existing version
+        existing.markdown = request.markdown
+        existing.feedback = {"committed_from": request.base_version}
+        existing.regen_context = f"Committed from v{request.base_version}"
+        db.commit()
+        db.refresh(existing)
+        
+        return {
+            "success": True,
+            "version_number": next_major,
+            "is_subversion": False,
+            "message": f"Updated v{next_major}",
+        }
+
+    try:
+        new_version = models.RunVersion(
+            run_id=run_id,
+            version_number=float(next_major),
+            markdown=request.markdown,
+            feedback={"committed_from": request.base_version},
+            regen_context=f"Committed from v{request.base_version}",
+        )
+        db.add(new_version)
+        db.commit()
+        db.refresh(new_version)
+
+        return {
+            "success": True,
+            "version_number": next_major,
+            "is_subversion": False,
+            "message": f"Committed as v{next_major}",
+        }
+    except Exception as exc:
+        logger.exception(f"Failed to commit version for run {run_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to commit version: {exc}"
+        )
+
+
+@run_router.delete("/{run_id}/versions/{version_number}")
+async def delete_version(
+    run_id: UUID,
+    version_number: float,
+    db: Session = Depends(db_session),
+):
+    """
+    Delete a specific version.
+    Cannot delete version 1 (original).
+    """
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    # Prevent deletion of original version
+    if version_number == 1 or abs(version_number - 1.0) < 0.001:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete the original version (v1)"
+        )
+
+    # Find the version
+    version = (
+        db.query(models.RunVersion)
+        .filter(
+            models.RunVersion.run_id == run_id,
+            models.RunVersion.version_number == version_number
+        )
+        .first()
+    )
+
+    if not version:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {version_number} not found"
+        )
+
+    try:
+        db.delete(version)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Deleted v{version_number}",
+        }
+    except Exception as exc:
+        logger.exception(f"Failed to delete version {version_number} for run {run_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete version: {exc}"
+        )
+
+
+class IndexDocumentsRequest(BaseModel):
+    """Request for indexing documents for a run."""
+    version: Optional[float] = Field(None, description="Version to index (default: latest)")
+
+
+@run_router.post("/{run_id}/index-documents")
+async def index_run_documents(
+    run_id: UUID,
+    request: IndexDocumentsRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Index the current document and input files for semantic search within this run.
+    Creates embeddings that can be used for chat context.
+    """
+    from server.db.session import engine
+    from server.services.vector_store import VectorStore
+    from server.core.llm import get_embedder
+    
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    try:
+        vector_store = VectorStore(engine)
+        embedder = get_embedder()
+        
+        # Clear existing embeddings for this run
+        deleted = vector_store.delete_run_embeddings(run_id)
+        logger.info(f"Deleted {deleted} existing embeddings for run {run_id}")
+        
+        indexed_count = 0
+        
+        # Get the document content
+        version_number = request.version
+        document_content = ""
+        
+        if version_number:
+            # Load specific version
+            version = (
+                db.query(models.RunVersion)
+                .filter(
+                    models.RunVersion.run_id == run_id,
+                    models.RunVersion.version_number == version_number
+                )
+                .first()
+            )
+            if version and version.markdown:
+                document_content = version.markdown
+        
+        if not document_content:
+            # Load from artifact
+            artifact = (
+                db.query(models.Artifact)
+                .filter(
+                    models.Artifact.run_id == run_id,
+                    models.Artifact.kind == "rendered_doc"
+                )
+                .first()
+            )
+            if artifact and artifact.path:
+                artifact_path = Path(artifact.path)
+                if artifact_path.exists():
+                    document_content = artifact_path.read_text()
+                    version_number = 1.0
+        
+        # Chunk and embed the document
+        if document_content:
+            # Simple chunking by paragraphs (could be improved)
+            chunks = [c.strip() for c in document_content.split("\n\n") if c.strip()]
+            
+            for i, chunk in enumerate(chunks):
+                if len(chunk) < 10:  # Skip very short chunks
+                    continue
+                    
+                # Get embedding
+                embedding = embedder.embed_text(chunk)
+                
+                # Store embedding
+                vector_store.upsert_run_embedding(
+                    embedding=embedding,
+                    project_id=run.project_id,
+                    run_id=run_id,
+                    version_number=version_number or 1.0,
+                    doc_kind="document_chunk",
+                    chunk_index=i,
+                    chunk_text=chunk,
+                )
+                indexed_count += 1
+        
+        return {
+            "success": True,
+            "indexed_chunks": indexed_count,
+            "deleted_old": deleted,
+            "version": version_number or 1.0,
+            "message": f"Indexed {indexed_count} chunks for v{version_number or 1.0}",
+        }
+        
+    except Exception as exc:
+        logger.exception(f"Failed to index documents for run {run_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to index documents: {exc}"
+        )
+
+
 class SaveQuestionsStateRequest(BaseModel):
     expert_answers: Dict[str, str] = Field(default_factory=dict)
     client_answers: Dict[str, str] = Field(default_factory=dict)

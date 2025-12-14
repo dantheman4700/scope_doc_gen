@@ -7,8 +7,6 @@ import {
   Edit3, 
   Save, 
   Loader2,
-  Check,
-  X,
   Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,9 +14,12 @@ import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { EditSuggestion } from "@/hooks/useRunChat";
+import { CursorStyleDiff } from "./CursorStyleDiff";
 
 interface MarkdownEditorProps {
   content: string;
+  savedContent?: string; // The last saved/committed version for diff comparison
+  stagedEdits?: EditSuggestion[]; // Currently staged edits
   onChange: (content: string) => void;
   onSave: () => void;
   isSaving?: boolean;
@@ -31,6 +32,8 @@ interface MarkdownEditorProps {
 
 export function MarkdownEditor({
   content,
+  savedContent,
+  stagedEdits = [],
   onChange,
   onSave,
   isSaving = false,
@@ -42,21 +45,32 @@ export function MarkdownEditor({
 }: MarkdownEditorProps) {
   const [mode, setMode] = useState<"edit" | "preview">("preview");
   const [localContent, setLocalContent] = useState(content);
-  // Track the "saved" version to compare against for hasChanges
-  const [savedContent, setSavedContent] = useState(content);
+  const [currentEditIndex, setCurrentEditIndex] = useState(0);
   
-  // Compute hasChanges by comparing local to saved
-  const hasChanges = localContent !== savedContent;
+  // Compute hasChanges by comparing current content to saved
+  const hasChanges = useMemo(() => {
+    if (!savedContent) return localContent !== content;
+    return localContent !== savedContent || stagedEdits.length > 0;
+  }, [localContent, savedContent, content, stagedEdits]);
 
-  // Sync content from props when it changes externally (e.g., version switch)
-  // We use a ref to track if this is a user edit or external update
+  // Filter for only pending edits
+  const activePendingEdits = useMemo(() => {
+    return pendingEdits.filter(e => e.status === "pending");
+  }, [pendingEdits]);
+
+  // Reset edit index when edits change
+  useEffect(() => {
+    if (currentEditIndex >= activePendingEdits.length) {
+      setCurrentEditIndex(Math.max(0, activePendingEdits.length - 1));
+    }
+  }, [activePendingEdits.length, currentEditIndex]);
+
+  // Sync content from props when it changes externally (e.g., version switch or staged edit applied)
   const isUserEditRef = React.useRef(false);
   
   useEffect(() => {
-    // Only reset if this is an external content change (not from user typing)
     if (!isUserEditRef.current) {
       setLocalContent(content);
-      setSavedContent(content);
     }
     isUserEditRef.current = false;
   }, [content]);
@@ -69,34 +83,30 @@ export function MarkdownEditor({
 
   const handleSave = useCallback(() => {
     onSave();
-    // After saving, update savedContent to match current content
-    setSavedContent(localContent);
-  }, [onSave, localContent]);
+  }, [onSave]);
 
   const handleRevert = useCallback(() => {
-    setLocalContent(savedContent);
-    onChange(savedContent);
-  }, [savedContent, onChange]);
+    const revertTo = savedContent || content;
+    setLocalContent(revertTo);
+    onChange(revertTo);
+  }, [savedContent, content, onChange]);
 
-  // Highlight pending edits in the preview
-  const highlightedContent = useMemo(() => {
-    if (pendingEdits.length === 0) return localContent;
-    
-    let result = localContent;
-    for (const edit of pendingEdits) {
-      if (edit.status === "pending" && result.includes(edit.oldStr)) {
-        // Wrap the old string in a highlight marker
-        result = result.replace(
-          edit.oldStr,
-          `<mark class="bg-yellow-200 dark:bg-yellow-800">${edit.oldStr}</mark>`
-        );
-      }
+  const handleAcceptEdit = useCallback((edit: EditSuggestion) => {
+    onApplyEdit?.(edit);
+    // Move to next edit if available
+    if (currentEditIndex < activePendingEdits.length - 1) {
+      setCurrentEditIndex(currentEditIndex + 1);
     }
-    return result;
-  }, [localContent, pendingEdits]);
+  }, [onApplyEdit, currentEditIndex, activePendingEdits.length]);
 
-  // Pending edits banner
-  const pendingCount = pendingEdits.filter(e => e.status === "pending").length;
+  const handleRejectEdit = useCallback((editId: string) => {
+    onRejectEdit?.(editId);
+    // Stay on same index (next edit will shift into this position)
+  }, [onRejectEdit]);
+
+  // Pending edits count
+  const pendingCount = activePendingEdits.length;
+  const stagedCount = stagedEdits.length;
 
   return (
     <div className={cn("flex h-full flex-col", className)}>
@@ -107,7 +117,7 @@ export function MarkdownEditor({
             <Button
               variant={mode === "edit" ? "secondary" : "ghost"}
               size="sm"
-              className="rounded-r-none border-r"
+              className="rounded-none rounded-l-md border-r"
               onClick={() => setMode("edit")}
               disabled={readOnly}
             >
@@ -117,7 +127,7 @@ export function MarkdownEditor({
             <Button
               variant={mode === "preview" ? "secondary" : "ghost"}
               size="sm"
-              className="rounded-l-none"
+              className="rounded-none rounded-r-md"
               onClick={() => setMode("preview")}
             >
               <Eye className="mr-1 h-3.5 w-3.5" />
@@ -128,6 +138,17 @@ export function MarkdownEditor({
           {hasChanges && (
             <span className="text-xs text-muted-foreground">
               Unsaved changes
+              {stagedCount > 0 && (
+                <span className="ml-1 text-blue-600">
+                  ({stagedCount} staged)
+                </span>
+              )}
+            </span>
+          )}
+
+          {pendingCount > 0 && (
+            <span className="text-xs text-purple-600 font-medium">
+              {pendingCount} edit{pendingCount > 1 ? "s" : ""} pending
             </span>
           )}
         </div>
@@ -160,50 +181,37 @@ export function MarkdownEditor({
         </div>
       </div>
 
-      {/* Pending Edits Banner */}
-      {pendingCount > 0 && (
-        <div className="flex items-center justify-between border-b border-yellow-500/50 bg-yellow-50 px-4 py-2 text-sm dark:bg-yellow-950/30">
-          <span className="text-yellow-800 dark:text-yellow-200">
-            {pendingCount} pending edit{pendingCount > 1 ? "s" : ""} to review
-          </span>
-          <div className="flex gap-2">
-            {pendingEdits.filter(e => e.status === "pending").map(edit => (
-              <div key={edit.id} className="flex items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 px-2 text-xs text-green-600 hover:text-green-700"
-                  onClick={() => onApplyEdit?.(edit)}
-                >
-                  <Check className="mr-1 h-3 w-3" />
-                  Apply
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 px-2 text-xs text-red-600 hover:text-red-700"
-                  onClick={() => onRejectEdit?.(edit.id)}
-                >
-                  <X className="mr-1 h-3 w-3" />
-                  Reject
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Content */}
       <div className="flex-1 overflow-hidden">
         {mode === "edit" ? (
-          <Textarea
-            value={localContent}
-            onChange={(e) => handleContentChange(e.target.value)}
-            className="h-full resize-none rounded-none border-0 font-mono text-sm focus-visible:ring-0"
-            placeholder="Start typing..."
-            disabled={readOnly}
+          <div className="h-full relative">
+            <Textarea
+              value={localContent}
+              onChange={(e) => handleContentChange(e.target.value)}
+              className="h-full resize-none rounded-none border-0 font-mono text-sm focus-visible:ring-0"
+              placeholder="Start typing..."
+              disabled={readOnly}
+            />
+            {/* Show pending edits indicator in edit mode */}
+            {pendingCount > 0 && (
+              <div className="absolute bottom-4 right-4 bg-purple-600 text-white text-xs px-2 py-1 rounded-full shadow-lg">
+                {pendingCount} pending - switch to Preview to review
+              </div>
+            )}
+          </div>
+        ) : pendingCount > 0 ? (
+          // Use CursorStyleDiff when there are pending edits
+          <CursorStyleDiff
+            content={localContent}
+            pendingEdits={activePendingEdits}
+            currentEditIndex={currentEditIndex}
+            onAccept={handleAcceptEdit}
+            onReject={handleRejectEdit}
+            onNavigate={setCurrentEditIndex}
+            className="h-full"
           />
         ) : (
+          // Regular markdown preview when no pending edits
           <div className="h-full overflow-y-auto p-6">
             <article className="prose dark:prose-invert mx-auto max-w-4xl prose-headings:mt-8 prose-headings:mb-4 prose-p:my-4 prose-li:my-1 prose-pre:my-4 prose-ul:my-4 prose-ol:my-4">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>

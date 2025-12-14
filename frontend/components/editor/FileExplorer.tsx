@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { 
   FileText, 
@@ -12,7 +12,18 @@ import {
   FileSpreadsheet,
   FileImage,
   FileCode,
+  Clock,
+  Trash2,
+  RotateCcw,
+  Eye,
 } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 interface FileItem {
   id: string;
@@ -57,7 +68,96 @@ interface FileExplorerProps {
   currentVersion: number;  // Can be float
   onFileSelect: (file: FileItem) => void;
   onVersionSelect: (version: number) => void;
+  onVersionDelete?: (version: number) => void;
+  onVersionRevert?: (version: number) => void;
   className?: string;
+}
+
+interface VersionGroup {
+  major: number;
+  subVersions: FileItem[];
+  latestSubVersion: number;
+}
+
+/**
+ * Version button with context menu
+ */
+function VersionButton({
+  version,
+  label,
+  isActive,
+  isMajor,
+  onClick,
+  onDelete,
+  onRevert,
+  className,
+}: {
+  version: number;
+  label: string;
+  isActive: boolean;
+  isMajor: boolean;
+  onClick: () => void;
+  onDelete?: () => void;
+  onRevert?: () => void;
+  className?: string;
+}) {
+  // Prevent deletion of v1 (original)
+  const canDelete = version !== 1;
+  
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          onClick={onClick}
+          className={cn(
+            "flex w-full items-center gap-2 text-left hover:bg-muted/50",
+            isMajor ? "px-5 py-1.5" : "px-2 py-1",
+            isActive && "bg-muted",
+            className
+          )}
+        >
+          <FileText className={cn(
+            isMajor ? "h-3.5 w-3.5" : "h-3 w-3",
+            isMajor && version === 1 ? "text-green-500" : 
+            isMajor ? "text-blue-500" : "text-muted-foreground"
+          )} />
+          <span className={cn(
+            "text-xs",
+            isMajor ? "font-medium" : "text-muted-foreground"
+          )}>
+            {label}
+          </span>
+          {isActive && (
+            <span className="ml-auto text-xs text-green-600">Active</span>
+          )}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={onClick}>
+          <Eye className="mr-2 h-4 w-4" />
+          View
+        </ContextMenuItem>
+        {onRevert && !isActive && (
+          <ContextMenuItem onClick={onRevert}>
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Revert to this version
+          </ContextMenuItem>
+        )}
+        {canDelete && onDelete && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem 
+              onClick={onDelete}
+              className="text-red-600 focus:text-red-600"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }
 
 export function FileExplorer({
@@ -66,12 +166,15 @@ export function FileExplorer({
   currentVersion,
   onFileSelect,
   onVersionSelect,
+  onVersionDelete,
+  onVersionRevert,
   className,
 }: FileExplorerProps) {
   const [expandedSections, setExpandedSections] = React.useState<Record<string, boolean>>({
     inputs: true,
     versions: true,
   });
+  const [expandedMajorVersions, setExpandedMajorVersions] = React.useState<Record<number, boolean>>({});
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({
@@ -80,10 +183,65 @@ export function FileExplorer({
     }));
   };
 
+  const toggleMajorVersion = (major: number) => {
+    setExpandedMajorVersions(prev => ({
+      ...prev,
+      [major]: !prev[major],
+    }));
+  };
+
   // Check if a version is active (handles float comparison)
   const isVersionActive = (version: number) => {
     return Math.abs(currentVersion - version) < 0.001;
   };
+
+  // Group versions by major version
+  const versionGroups = useMemo((): VersionGroup[] => {
+    const groups: Map<number, FileItem[]> = new Map();
+    
+    // Group all versions by their major number
+    for (const v of versions) {
+      const versionNum = v.version ?? 1;
+      const major = Math.floor(versionNum);
+      
+      if (!groups.has(major)) {
+        groups.set(major, []);
+      }
+      groups.get(major)!.push(v);
+    }
+    
+    // Convert to array and sort
+    const result: VersionGroup[] = [];
+    const sortedMajors = Array.from(groups.keys()).sort((a, b) => b - a); // Descending
+    
+    for (const major of sortedMajors) {
+      const subVersions = groups.get(major)!;
+      // Sort sub-versions by version number descending
+      subVersions.sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
+      
+      const latestSubVersion = subVersions.length > 0 
+        ? Math.max(...subVersions.map(v => v.version ?? major))
+        : major;
+      
+      result.push({
+        major,
+        subVersions,
+        latestSubVersion,
+      });
+    }
+    
+    return result;
+  }, [versions]);
+
+  // Get current major version
+  const currentMajor = Math.floor(currentVersion);
+
+  // Count major versions (including v1 which may not be in the list)
+  const majorVersionCount = useMemo(() => {
+    const majors = new Set(versionGroups.map(g => g.major));
+    majors.add(1); // Always include v1
+    return majors.size;
+  }, [versionGroups]);
 
   return (
     <div className={cn("flex flex-col text-sm", className)}>
@@ -144,46 +302,124 @@ export function FileExplorer({
           <History className="h-4 w-4 text-purple-500" />
           <span className="font-medium">Versions</span>
           <span className="ml-auto text-xs text-muted-foreground">
-            {versions.length + 1}
+            {majorVersionCount}
           </span>
         </button>
         {expandedSections.versions && (
           <div className="pb-2">
-            {/* Original version (v1) */}
-            <button
-              onClick={() => onVersionSelect(1)}
-              className={cn(
-                "flex w-full items-center gap-2 px-7 py-1.5 text-left hover:bg-muted/50",
-                isVersionActive(1) && "bg-muted"
-              )}
-            >
-              <FileText className="h-3.5 w-3.5 text-green-500" />
-              <span className="text-xs">v1 (Original)</span>
-              {isVersionActive(1) && (
-                <span className="ml-auto text-xs text-green-600">Active</span>
-              )}
-            </button>
+            {/* Original version (v1) - always show */}
+            <div>
+              <VersionButton
+                version={1}
+                label="v1 (Original)"
+                isActive={isVersionActive(1)}
+                isMajor={true}
+                onClick={() => onVersionSelect(1)}
+                onDelete={onVersionDelete ? () => onVersionDelete(1) : undefined}
+                onRevert={onVersionRevert ? () => onVersionRevert(1) : undefined}
+                className={currentMajor === 1 ? "bg-muted/70" : ""}
+              />
+              
+              {/* Sub-versions for v1 */}
+              {versionGroups.find(g => g.major === 1)?.subVersions.length ? (
+                <div className="ml-5">
+                  <button
+                    onClick={() => toggleMajorVersion(1)}
+                    className="flex w-full items-center gap-1 px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {expandedMajorVersions[1] ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    <Clock className="h-3 w-3" />
+                    <span>
+                      {versionGroups.find(g => g.major === 1)?.subVersions.length} saved edit{versionGroups.find(g => g.major === 1)?.subVersions.length !== 1 ? 's' : ''}
+                    </span>
+                  </button>
+                  
+                  {expandedMajorVersions[1] && (
+                    <div className="ml-4">
+                      {versionGroups.find(g => g.major === 1)?.subVersions.map(v => {
+                        const vNum = v.version ?? 1.1;
+                        return (
+                          <VersionButton
+                            key={v.id}
+                            version={vNum}
+                            label={formatVersion(vNum)}
+                            isActive={isVersionActive(vNum)}
+                            isMajor={false}
+                            onClick={() => onVersionSelect(vNum)}
+                            onDelete={onVersionDelete ? () => onVersionDelete(vNum) : undefined}
+                            onRevert={onVersionRevert ? () => onVersionRevert(vNum) : undefined}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
             
-            {/* Sub-versions (1.1, 1.2, etc.) */}
-            {versions.map(version => {
-              const versionNum = version.version ?? 1.1;
-              return (
-                <button
-                  key={version.id}
-                  onClick={() => onVersionSelect(versionNum)}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-7 py-1.5 text-left hover:bg-muted/50",
-                    isVersionActive(versionNum) && "bg-muted"
+            {/* Major versions 2+ */}
+            {versionGroups
+              .filter(g => g.major > 1)
+              .map(group => (
+                <div key={group.major}>
+                  <VersionButton
+                    version={group.major}
+                    label={`v${group.major}`}
+                    isActive={isVersionActive(group.major)}
+                    isMajor={true}
+                    onClick={() => onVersionSelect(group.major)}
+                    onDelete={onVersionDelete ? () => onVersionDelete(group.major) : undefined}
+                    onRevert={onVersionRevert ? () => onVersionRevert(group.major) : undefined}
+                    className={currentMajor === group.major ? "bg-muted/70" : ""}
+                  />
+                  
+                  {/* Sub-versions for this major */}
+                  {group.subVersions.filter(v => !Number.isInteger(v.version)).length > 0 && (
+                    <div className="ml-5">
+                      <button
+                        onClick={() => toggleMajorVersion(group.major)}
+                        className="flex w-full items-center gap-1 px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        {expandedMajorVersions[group.major] ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                        <Clock className="h-3 w-3" />
+                        <span>
+                          {group.subVersions.filter(v => !Number.isInteger(v.version)).length} saved edit{group.subVersions.filter(v => !Number.isInteger(v.version)).length !== 1 ? 's' : ''}
+                        </span>
+                      </button>
+                      
+                      {expandedMajorVersions[group.major] && (
+                        <div className="ml-4">
+                          {group.subVersions
+                            .filter(v => !Number.isInteger(v.version))
+                            .map(v => {
+                              const vNum = v.version ?? group.major + 0.1;
+                              return (
+                                <VersionButton
+                                  key={v.id}
+                                  version={vNum}
+                                  label={formatVersion(vNum)}
+                                  isActive={isVersionActive(vNum)}
+                                  isMajor={false}
+                                  onClick={() => onVersionSelect(vNum)}
+                                  onDelete={onVersionDelete ? () => onVersionDelete(vNum) : undefined}
+                                  onRevert={onVersionRevert ? () => onVersionRevert(vNum) : undefined}
+                                />
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
                   )}
-                >
-                  <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-xs">{formatVersion(versionNum)}</span>
-                  {isVersionActive(versionNum) && (
-                    <span className="ml-auto text-xs text-green-600">Active</span>
-                  )}
-                </button>
-              );
-            })}
+                </div>
+              ))}
           </div>
         )}
       </div>

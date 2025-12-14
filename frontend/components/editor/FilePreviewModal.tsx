@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -171,6 +171,43 @@ function XlsxPreview({ url }: { url: string }) {
   const [xlsxError, setXlsxError] = useState<string | null>(null);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [activeSheet, setActiveSheet] = useState<string>("");
+  // Store workbook in state so we can switch sheets
+  const [workbook, setWorkbook] = useState<import("xlsx").WorkBook | null>(null);
+
+  // Load sheet data from workbook - defined outside useEffect so it can be called from click handlers
+  const loadSheet = useCallback(async (wb: import("xlsx").WorkBook, sheetName: string) => {
+    const XLSX = await import("xlsx");
+    const sheet = wb.Sheets[sheetName];
+    // header: 1 returns array of arrays
+    const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+    
+    if (jsonData.length === 0) {
+      setData({ columns: [], rows: [] });
+      return;
+    }
+    
+    // First row as headers
+    const firstRow = jsonData[0] as unknown[];
+    const headers = firstRow.map((h, i) => String(h || `Column ${i + 1}`));
+    const rows = jsonData.slice(1).map((row) => {
+      const rowData: Record<string, unknown> = {};
+      const rowArray = row as unknown[];
+      rowArray.forEach((cell, i) => {
+        rowData[headers[i] || `col${i}`] = cell;
+      });
+      return rowData;
+    });
+    
+    setData({ columns: headers, rows });
+  }, []);
+
+  // Handle sheet tab click
+  const handleSheetChange = useCallback((sheetName: string) => {
+    setActiveSheet(sheetName);
+    if (workbook) {
+      loadSheet(workbook, sheetName);
+    }
+  }, [workbook, loadSheet]);
 
   useEffect(() => {
     async function loadXlsx() {
@@ -181,12 +218,32 @@ function XlsxPreview({ url }: { url: string }) {
         const arrayBuffer = await response.arrayBuffer();
         const XLSX = await import("xlsx");
         
-        const workbook = XLSX.read(arrayBuffer, { type: "array" });
-        setSheetNames(workbook.SheetNames);
+        const wb = XLSX.read(arrayBuffer, { type: "array" });
+        setWorkbook(wb);
+        setSheetNames(wb.SheetNames);
         
-        const firstSheet = workbook.SheetNames[0];
+        const firstSheet = wb.SheetNames[0];
         setActiveSheet(firstSheet);
-        loadSheet(workbook, firstSheet);
+        
+        // Load first sheet data
+        const sheet = wb.Sheets[firstSheet];
+        const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+        
+        if (jsonData.length > 0) {
+          const firstRow = jsonData[0] as unknown[];
+          const headers = firstRow.map((h, i) => String(h || `Column ${i + 1}`));
+          const rows = jsonData.slice(1).map((row) => {
+            const rowData: Record<string, unknown> = {};
+            const rowArray = row as unknown[];
+            rowArray.forEach((cell, i) => {
+              rowData[headers[i] || `col${i}`] = cell;
+            });
+            return rowData;
+          });
+          setData({ columns: headers, rows });
+        } else {
+          setData({ columns: [], rows: [] });
+        }
         
         setLoading(false);
       } catch (err) {
@@ -194,32 +251,6 @@ function XlsxPreview({ url }: { url: string }) {
         setXlsxError("Failed to preview XLSX file");
         setLoading(false);
       }
-    }
-    
-    async function loadSheet(workbook: import("xlsx").WorkBook, sheetName: string) {
-      const XLSX = await import("xlsx");
-      const sheet = workbook.Sheets[sheetName];
-      // header: 1 returns array of arrays
-      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
-      
-      if (jsonData.length === 0) {
-        setData({ columns: [], rows: [] });
-        return;
-      }
-      
-      // First row as headers
-      const firstRow = jsonData[0] as unknown[];
-      const headers = firstRow.map((h, i) => String(h || `Column ${i + 1}`));
-      const rows = jsonData.slice(1).map((row) => {
-        const rowData: Record<string, unknown> = {};
-        const rowArray = row as unknown[];
-        rowArray.forEach((cell, i) => {
-          rowData[headers[i] || `col${i}`] = cell;
-        });
-        return rowData;
-      });
-      
-      setData({ columns: headers, rows });
     }
     
     loadXlsx();
@@ -255,7 +286,7 @@ function XlsxPreview({ url }: { url: string }) {
               key={name}
               variant={activeSheet === name ? "default" : "outline"}
               size="sm"
-              onClick={() => setActiveSheet(name)}
+              onClick={() => handleSheetChange(name)}
             >
               {name}
             </Button>

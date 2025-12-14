@@ -10,6 +10,8 @@ import {
   Sparkles,
   AlertCircle,
   Trash2,
+  Search,
+  Calculator,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,9 +109,62 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
 }) {
   const editCalls = message.toolCalls?.filter(tc => tc.name === "str_replace_edit") || [];
   const ambiguityCalls = message.toolCalls?.filter(tc => tc.name === "highlight_ambiguity") || [];
+  const researchCalls = message.toolCalls?.filter(tc => tc.name === "deep_research") || [];
+  const calculatorCalls = message.toolCalls?.filter(tc => tc.name === "calculate") || [];
   
   return (
     <div className="space-y-2">
+      {/* Research indicators */}
+      {researchCalls.map(tc => (
+        <div key={tc.id} className="rounded-md border border-blue-500/50 bg-blue-50 p-3 text-xs dark:bg-blue-950/30">
+          <div className="flex items-center gap-2">
+            <Search className={cn(
+              "h-4 w-4 text-blue-600",
+              tc.status === "pending" && "animate-pulse"
+            )} />
+            <div className="flex-1">
+              <span className="font-medium text-blue-700 dark:text-blue-400">
+                {tc.status === "pending" ? "Researching..." : "Research Complete"}
+              </span>
+              <p className="text-blue-600 dark:text-blue-300 mt-0.5">
+                {(tc.input as { query?: string }).query}
+              </p>
+            </div>
+            {tc.status === "pending" && (
+              <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+            )}
+          </div>
+        </div>
+      ))}
+
+      {/* Calculator indicators */}
+      {calculatorCalls.map(tc => {
+        const input = tc.input as { expression?: string; description?: string; result?: number | string };
+        return (
+          <div key={tc.id} className="rounded-md border border-purple-500/50 bg-purple-50 p-3 text-xs dark:bg-purple-950/30">
+            <div className="flex items-center gap-2">
+              <Calculator className="h-4 w-4 text-purple-600" />
+              <div className="flex-1">
+                <span className="font-medium text-purple-700 dark:text-purple-400">
+                  Calculation
+                </span>
+                <p className="text-purple-600 dark:text-purple-300 font-mono mt-0.5">
+                  {input.expression}
+                  {input.result !== undefined && (
+                    <span className="ml-2 font-bold">= {input.result}</span>
+                  )}
+                </p>
+                {input.description && (
+                  <p className="text-muted-foreground italic mt-1">
+                    {input.description}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
       {message.content && (
         <div className="prose prose-sm dark:prose-invert max-w-none">
           <ReactMarkdown>{message.content}</ReactMarkdown>

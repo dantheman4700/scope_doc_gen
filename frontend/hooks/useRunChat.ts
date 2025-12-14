@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 
 export interface ChatMessage {
   id: string;
@@ -22,7 +22,7 @@ export interface EditSuggestion {
   oldStr: string;
   newStr: string;
   reason?: string;
-  status: "pending" | "applied" | "rejected";
+  status: "pending" | "staged" | "applied" | "rejected";
 }
 
 interface UseRunChatOptions {
@@ -38,10 +38,55 @@ interface UseRunChatReturn {
   isStreaming: boolean;
   error: string | null;
   pendingEdits: EditSuggestion[];
+  stagedEdits: EditSuggestion[];
+  stagedContent: string;
   sendMessage: (message: string) => Promise<void>;
-  applyEdit: (edit: EditSuggestion) => Promise<boolean>;
+  stageEdit: (edit: EditSuggestion) => void;
+  unstageEdit: (editId: string) => void;
   rejectEdit: (editId: string) => void;
+  clearStagedEdits: () => void;
+  commitStagedEdits: () => void;
   clearMessages: () => void;
+  // Legacy - for backward compatibility
+  applyEdit: (edit: EditSuggestion) => Promise<boolean>;
+}
+
+/**
+ * Apply a single edit to document content
+ */
+function applyEditToContent(content: string, oldStr: string, newStr: string): string {
+  if (!content.includes(oldStr)) {
+    return content;
+  }
+  return content.replace(oldStr, newStr);
+}
+
+/**
+ * Apply all staged edits sequentially to produce the staged content
+ */
+function applyAllEdits(baseContent: string, edits: EditSuggestion[]): string {
+  let result = baseContent;
+  for (const edit of edits) {
+    result = applyEditToContent(result, edit.oldStr, edit.newStr);
+  }
+  return result;
+}
+
+// Storage key for localStorage
+const CHAT_STORAGE_KEY = (runId: string) => `scope-chat-${runId}`;
+
+// Serializable version of ChatMessage (Date -> string)
+interface StoredChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: ToolCall[];
+  timestamp: string;
+}
+
+interface StoredChatState {
+  messages: StoredChatMessage[];
+  pendingEdits: EditSuggestion[];
 }
 
 export function useRunChat({
@@ -55,12 +100,64 @@ export function useRunChat({
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingEdits, setPendingEdits] = useState<EditSuggestion[]>([]);
+  const [stagedEdits, setStagedEdits] = useState<EditSuggestion[]>([]);
+  const [isInitialized, setIsInitialized] = useState(false);
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentDocRef = useRef(documentContent);
   
   // Keep doc ref updated
   currentDocRef.current = documentContent;
+
+  // Load chat state from localStorage on mount
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    
+    try {
+      const stored = localStorage.getItem(CHAT_STORAGE_KEY(runId));
+      if (stored) {
+        const parsed: StoredChatState = JSON.parse(stored);
+        
+        // Convert stored messages back to ChatMessage (string -> Date)
+        const restoredMessages: ChatMessage[] = parsed.messages.map(m => ({
+          ...m,
+          timestamp: new Date(m.timestamp),
+        }));
+        
+        setMessages(restoredMessages);
+        setPendingEdits(parsed.pendingEdits || []);
+      }
+    } catch (err) {
+      console.error("Failed to load chat state from localStorage:", err);
+    }
+    
+    setIsInitialized(true);
+  }, [runId]);
+
+  // Save chat state to localStorage when messages change
+  useEffect(() => {
+    if (typeof window === "undefined" || !isInitialized) return;
+    
+    try {
+      const toStore: StoredChatState = {
+        messages: messages.map(m => ({
+          ...m,
+          timestamp: m.timestamp.toISOString(),
+        })),
+        pendingEdits,
+      };
+      
+      localStorage.setItem(CHAT_STORAGE_KEY(runId), JSON.stringify(toStore));
+    } catch (err) {
+      console.error("Failed to save chat state to localStorage:", err);
+    }
+  }, [runId, messages, pendingEdits, isInitialized]);
+
+  // Compute staged content by applying all staged edits to the document
+  const stagedContent = useMemo(() => {
+    if (stagedEdits.length === 0) return documentContent;
+    return applyAllEdits(documentContent, stagedEdits);
+  }, [documentContent, stagedEdits]);
 
   const sendMessage = useCallback(async (message: string) => {
     if (!message.trim()) return;
@@ -98,13 +195,18 @@ export function useRunChat({
         content: m.content,
       }));
       
+      // Send the staged content (with applied edits) to the AI
+      const contentToSend = stagedEdits.length > 0 
+        ? applyAllEdits(currentDocRef.current, stagedEdits)
+        : currentDocRef.current;
+      
       const response = await fetch(`/api/runs/${runId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message,
           conversation_history: history,
-          document_content: currentDocRef.current,
+          document_content: contentToSend,
           version,
           enable_web_search: false,
           use_perplexity: false,
@@ -198,6 +300,40 @@ export function useRunChat({
                     : m
                 ));
               }
+
+              if (data.name === "deep_research" && data.input) {
+                // Deep research tool call - show indicator in chat
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), {
+                          id: data.id || `research-${Date.now()}`,
+                          name: "deep_research",
+                          input: data.input,
+                          status: "pending" as const,
+                        }],
+                      }
+                    : m
+                ));
+              }
+
+              if (data.name === "calculate" && data.input) {
+                // Calculator tool call
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), {
+                          id: data.id || `calc-${Date.now()}`,
+                          name: "calculate",
+                          input: data.input,
+                          status: "pending" as const,
+                        }],
+                      }
+                    : m
+                ));
+              }
               
               if (data.message) {
                 // Error message
@@ -221,59 +357,68 @@ export function useRunChat({
       setIsStreaming(false);
       abortControllerRef.current = null;
     }
-  }, [runId, messages, version, onEditSuggestion]);
+  }, [runId, messages, version, stagedEdits, onEditSuggestion]);
 
-  const applyEdit = useCallback(async (edit: EditSuggestion): Promise<boolean> => {
-    try {
-      const response = await fetch(`/api/runs/${runId}/apply-edit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          old_str: edit.oldStr,
-          new_str: edit.newStr,
-          document_content: currentDocRef.current,
-          save_version: true,
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Apply edit failed: ${response.status}`);
-      }
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        // Update edit status
-        setPendingEdits(prev => prev.map(e =>
-          e.id === edit.id ? { ...e, status: "applied" as const } : e
-        ));
-        
-        // Update message tool call status
-        setMessages(prev => prev.map(m => ({
-          ...m,
-          toolCalls: m.toolCalls?.map(tc =>
-            tc.id === edit.id ? { ...tc, status: "applied" as const } : tc
-          ),
-        })));
-        
-        // Notify parent of document update
-        onDocumentUpdate?.(result.new_content);
-        currentDocRef.current = result.new_content;
-        
-        return true;
-      }
-      
-      return false;
-    } catch (err) {
-      setError((err as Error).message);
-      return false;
-    }
-  }, [runId, onDocumentUpdate]);
+  /**
+   * Stage an edit locally (move from pending to staged)
+   * This does NOT save to backend - just prepares the edit for commit
+   */
+  const stageEdit = useCallback((edit: EditSuggestion) => {
+    // Move from pending to staged
+    setPendingEdits(prev => prev.map(e =>
+      e.id === edit.id ? { ...e, status: "staged" as const } : e
+    ));
+    
+    // Add to staged edits
+    setStagedEdits(prev => [...prev, { ...edit, status: "staged" as const }]);
+    
+    // Update message tool call status
+    setMessages(prev => prev.map(m => ({
+      ...m,
+      toolCalls: m.toolCalls?.map(tc =>
+        tc.id === edit.id ? { ...tc, status: "applied" as const } : tc
+      ),
+    })));
+    
+    // Notify parent of staged content update
+    const newContent = applyEditToContent(currentDocRef.current, edit.oldStr, edit.newStr);
+    onDocumentUpdate?.(newContent);
+  }, [onDocumentUpdate]);
 
+  /**
+   * Unstage an edit (move from staged back to pending)
+   */
+  const unstageEdit = useCallback((editId: string) => {
+    const edit = stagedEdits.find(e => e.id === editId);
+    if (!edit) return;
+    
+    // Remove from staged
+    setStagedEdits(prev => prev.filter(e => e.id !== editId));
+    
+    // Move back to pending
+    setPendingEdits(prev => prev.map(e =>
+      e.id === editId ? { ...e, status: "pending" as const } : e
+    ));
+    
+    // Update message tool call status
+    setMessages(prev => prev.map(m => ({
+      ...m,
+      toolCalls: m.toolCalls?.map(tc =>
+        tc.id === editId ? { ...tc, status: "pending" as const } : tc
+      ),
+    })));
+  }, [stagedEdits]);
+
+  /**
+   * Reject an edit completely
+   */
   const rejectEdit = useCallback((editId: string) => {
     setPendingEdits(prev => prev.map(e =>
       e.id === editId ? { ...e, status: "rejected" as const } : e
     ));
+    
+    // Also remove from staged if it was there
+    setStagedEdits(prev => prev.filter(e => e.id !== editId));
     
     setMessages(prev => prev.map(m => ({
       ...m,
@@ -283,23 +428,83 @@ export function useRunChat({
     })));
   }, []);
 
+  /**
+   * Clear all staged edits (discard uncommitted changes - moves back to pending)
+   */
+  const clearStagedEdits = useCallback(() => {
+    setStagedEdits([]);
+    // Move all staged back to pending
+    setPendingEdits(prev => prev.map(e =>
+      e.status === "staged" ? { ...e, status: "pending" as const } : e
+    ));
+  }, []);
+
+  /**
+   * Commit all staged edits (after successful save - marks as applied and removes)
+   * Call this after the backend save succeeds.
+   */
+  const commitStagedEdits = useCallback(() => {
+    // Get IDs of staged edits
+    const stagedIds = new Set(stagedEdits.map(e => e.id));
+    
+    // Clear staged edits
+    setStagedEdits([]);
+    
+    // Mark as applied in pendingEdits (so they show as "Applied" in UI)
+    // Then filter them out since they're now saved
+    setPendingEdits(prev => prev.filter(e => !stagedIds.has(e.id)));
+    
+    // Update message tool call statuses to "applied"
+    setMessages(prev => prev.map(m => ({
+      ...m,
+      toolCalls: m.toolCalls?.map(tc =>
+        stagedIds.has(tc.id) ? { ...tc, status: "applied" as const } : tc
+      ),
+    })));
+  }, [stagedEdits]);
+
   const clearMessages = useCallback(() => {
     setMessages([]);
     setPendingEdits([]);
+    setStagedEdits([]);
     setError(null);
-    
+
     // Abort any ongoing request
     abortControllerRef.current?.abort();
-  }, []);
+    
+    // Clear localStorage
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(CHAT_STORAGE_KEY(runId));
+      } catch (err) {
+        console.error("Failed to clear chat state from localStorage:", err);
+      }
+    }
+  }, [runId]);
+
+  /**
+   * Legacy applyEdit - now just calls stageEdit for backward compatibility
+   * The actual save happens when the user clicks "Save" in the editor
+   */
+  const applyEdit = useCallback(async (edit: EditSuggestion): Promise<boolean> => {
+    stageEdit(edit);
+    return true;
+  }, [stageEdit]);
 
   return {
     messages,
     isStreaming,
     error,
     pendingEdits,
+    stagedEdits,
+    stagedContent,
     sendMessage,
-    applyEdit,
+    stageEdit,
+    unstageEdit,
     rejectEdit,
+    clearStagedEdits,
+    commitStagedEdits,
     clearMessages,
+    applyEdit,
   };
 }

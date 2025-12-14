@@ -191,6 +191,132 @@ class VectorStore:
 
         return embedding_id
 
+    def upsert_run_embedding(
+        self,
+        *,
+        embedding: Sequence[float],
+        project_id: Optional[UUID],
+        run_id: UUID,
+        version_number: float,
+        doc_kind: str,
+        chunk_index: int = 0,
+        chunk_text: str = "",
+        metadata: Optional[dict] = None,
+        embedding_id: Optional[UUID] = None,
+    ) -> UUID:
+        """Insert or update an embedding for a run document."""
+        self._ensure_schema_lazy()
+
+        embedding_id = embedding_id or uuid4()
+        
+        # Store run info in metadata
+        full_metadata = metadata or {}
+        full_metadata.update({
+            "run_id": str(run_id),
+            "version_number": version_number,
+            "chunk_index": chunk_index,
+            "chunk_text": chunk_text[:500] if chunk_text else "",  # Store preview
+        })
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO scope_embeddings (id, project_id, doc_kind, embedding, metadata)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                            SET project_id = EXCLUDED.project_id,
+                                doc_kind = EXCLUDED.doc_kind,
+                                embedding = EXCLUDED.embedding,
+                                metadata = EXCLUDED.metadata,
+                                created_at = NOW()
+                        """,
+                        (
+                            embedding_id,
+                            project_id,
+                            doc_kind,
+                            Vector(list(embedding)),
+                            Json(full_metadata),
+                        ),
+                    )
+                except Exception as exc:
+                    conn.rollback()
+                    raise VectorStoreError(f"Failed to upsert run embedding: {exc}") from exc
+                else:
+                    conn.commit()
+
+        return embedding_id
+
+    def delete_run_embeddings(self, run_id: UUID) -> int:
+        """Delete all embeddings for a specific run."""
+        self._ensure_schema_lazy()
+        
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        DELETE FROM scope_embeddings 
+                        WHERE metadata->>'run_id' = %s
+                        """,
+                        (str(run_id),),
+                    )
+                    deleted = cur.rowcount
+                except Exception as exc:
+                    conn.rollback()
+                    raise VectorStoreError(f"Failed to delete run embeddings: {exc}") from exc
+                else:
+                    conn.commit()
+        return deleted
+
+    def similarity_search_run(
+        self,
+        embedding: Sequence[float],
+        run_id: UUID,
+        *,
+        top_k: int = 5,
+    ) -> list[VectorRecord]:
+        """Return nearest neighbours for a specific run using cosine distance."""
+        self._ensure_schema_lazy()
+
+        sql = """
+            SELECT id, project_id, doc_kind, metadata, created_at,
+                   embedding <=> %s AS similarity
+            FROM scope_embeddings
+            WHERE metadata->>'run_id' = %s
+            ORDER BY embedding <=> %s ASC
+            LIMIT %s
+        """
+        params = [
+            Vector(list(embedding)),
+            str(run_id),
+            Vector(list(embedding)),
+            top_k,
+        ]
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+                except Exception as exc:
+                    raise VectorStoreError(f"Run similarity search failed: {exc}") from exc
+
+        results: list[VectorRecord] = []
+        for row in rows:
+            results.append(
+                VectorRecord(
+                    id=row["id"],
+                    project_id=row.get("project_id"),
+                    doc_kind=row["doc_kind"],
+                    similarity=row["similarity"],
+                    metadata=row.get("metadata") or {},
+                    created_at=str(row["created_at"]),
+                )
+            )
+        return results
+
     def delete_embeddings(self, embedding_ids: Iterable[UUID]) -> int:
         self._ensure_schema_lazy()  # Lazy schema creation
         ids = list(embedding_ids)
