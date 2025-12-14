@@ -12,6 +12,7 @@ import {
   Trash2,
   Search,
   Calculator,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -111,9 +112,38 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
   const ambiguityCalls = message.toolCalls?.filter(tc => tc.name === "highlight_ambiguity") || [];
   const researchCalls = message.toolCalls?.filter(tc => tc.name === "deep_research") || [];
   const calculatorCalls = message.toolCalls?.filter(tc => tc.name === "calculate") || [];
+  const readCalls = message.toolCalls?.filter(tc => tc.name === "read_document") || [];
   
   return (
     <div className="space-y-2">
+      {/* Read document indicators */}
+      {readCalls.map(tc => (
+        <div key={tc.id} className="rounded-md border border-slate-500/50 bg-slate-50 p-3 text-xs dark:bg-slate-950/30">
+          <div className="flex items-center gap-2">
+            <FileText className={cn(
+              "h-4 w-4 text-slate-600",
+              tc.status === "pending" && "animate-pulse"
+            )} />
+            <div className="flex-1">
+              <span className="font-medium text-slate-700 dark:text-slate-400">
+                {tc.status === "pending" ? "Reading document..." : "Read complete"}
+              </span>
+              {(tc.input as { section?: string }).section && (
+                <p className="text-slate-600 dark:text-slate-300 mt-0.5">
+                  Section: {(tc.input as { section?: string }).section}
+                </p>
+              )}
+            </div>
+            {tc.status === "pending" && (
+              <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+            )}
+            {tc.status === "applied" && (
+              <Check className="h-4 w-4 text-green-500" />
+            )}
+          </div>
+        </div>
+      ))}
+
       {/* Research indicators */}
       {researchCalls.map(tc => (
         <div key={tc.id} className="rounded-md border border-blue-500/50 bg-blue-50 p-3 text-xs dark:bg-blue-950/30">
@@ -133,13 +163,16 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
             {tc.status === "pending" && (
               <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
             )}
+            {tc.status === "applied" && (
+              <Check className="h-4 w-4 text-green-500" />
+            )}
           </div>
         </div>
       ))}
 
       {/* Calculator indicators */}
       {calculatorCalls.map(tc => {
-        const input = tc.input as { expression?: string; description?: string; result?: number | string };
+        const input = tc.input as { expression?: string; description?: string };
         return (
           <div key={tc.id} className="rounded-md border border-purple-500/50 bg-purple-50 p-3 text-xs dark:bg-purple-950/30">
             <div className="flex items-center gap-2">
@@ -150,16 +183,24 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
                 </span>
                 <p className="text-purple-600 dark:text-purple-300 font-mono mt-0.5">
                   {input.expression}
-                  {input.result !== undefined && (
-                    <span className="ml-2 font-bold">= {input.result}</span>
-                  )}
                 </p>
                 {input.description && (
                   <p className="text-muted-foreground italic mt-1">
                     {input.description}
                   </p>
                 )}
+                {tc.result && (
+                  <p className="text-green-600 dark:text-green-400 font-mono mt-1 font-bold">
+                    → {tc.result}
+                  </p>
+                )}
               </div>
+              {tc.status === "pending" && (
+                <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
+              )}
+              {tc.status === "applied" && (
+                <Check className="h-4 w-4 text-green-500" />
+              )}
             </div>
           </div>
         );

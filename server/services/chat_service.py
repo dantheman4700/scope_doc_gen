@@ -271,19 +271,21 @@ Be concise and helpful. Focus on improving the document quality."""
         use_perplexity: bool = False,
     ) -> AsyncIterator[SSEEvent]:
         """
-        Stream a chat response with tool calls.
+        Stream a chat response with tool calls and agentic loop.
         
         Yields SSEEvent objects that can be serialized for the client.
+        When Claude makes tool calls, this executes them and continues.
         """
         system_prompt = self._build_system_prompt(document_content, run_context)
 
-        # Build messages from conversation history
+        # Build messages from conversation history - filter empty content
         messages = []
         for msg in conversation_history:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content,
-            })
+            if msg.content and msg.content.strip():
+                messages.append({
+                    "role": msg.role,
+                    "content": msg.content,
+                })
 
         # Add current message
         messages.append({
@@ -300,80 +302,230 @@ Be concise and helpful. Focus on improving the document quality."""
                 "max_uses": WEB_SEARCH_MAX_USES,
             })
 
-        try:
-            # Use streaming for responses
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=8192,
-                temperature=0.7,
-                system=system_prompt,
-                messages=messages,
-                tools=tools,
-            ) as stream:
-                current_tool_use = None
-                accumulated_text = ""
+        # Agentic loop - continue until no more tool calls
+        max_iterations = 10  # Safety limit
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            
+            try:
+                # Use streaming for responses
+                with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=8192,
+                    temperature=0.7,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                ) as stream:
+                    current_tool_use = None
+                    accumulated_text = ""
+                    tool_calls_in_response = []
+                    stop_reason = None
 
-                for event in stream:
-                    # Handle text deltas
-                    if hasattr(event, 'type'):
-                        if event.type == 'content_block_start':
-                            block = getattr(event, 'content_block', None)
-                            if block and getattr(block, 'type', None) == 'tool_use':
-                                current_tool_use = {
-                                    'id': getattr(block, 'id', ''),
-                                    'name': getattr(block, 'name', ''),
-                                    'input': '',
-                                }
+                    for event in stream:
+                        # Handle text deltas
+                        if hasattr(event, 'type'):
+                            if event.type == 'content_block_start':
+                                block = getattr(event, 'content_block', None)
+                                if block and getattr(block, 'type', None) == 'tool_use':
+                                    current_tool_use = {
+                                        'id': getattr(block, 'id', ''),
+                                        'name': getattr(block, 'name', ''),
+                                        'input': '',
+                                    }
 
-                        elif event.type == 'content_block_delta':
-                            delta = getattr(event, 'delta', None)
-                            if delta:
-                                delta_type = getattr(delta, 'type', '')
-                                
-                                if delta_type == 'text_delta':
-                                    text = getattr(delta, 'text', '')
-                                    if text:
-                                        accumulated_text += text
-                                        yield SSEEvent(
-                                            event_type='text',
-                                            data={'content': text}
-                                        )
-                                
-                                elif delta_type == 'input_json_delta':
-                                    partial_json = getattr(delta, 'partial_json', '')
-                                    if current_tool_use and partial_json:
-                                        current_tool_use['input'] += partial_json
+                            elif event.type == 'content_block_delta':
+                                delta = getattr(event, 'delta', None)
+                                if delta:
+                                    delta_type = getattr(delta, 'type', '')
+                                    
+                                    if delta_type == 'text_delta':
+                                        text = getattr(delta, 'text', '')
+                                        if text:
+                                            accumulated_text += text
+                                            yield SSEEvent(
+                                                event_type='text',
+                                                data={'content': text}
+                                            )
+                                    
+                                    elif delta_type == 'input_json_delta':
+                                        partial_json = getattr(delta, 'partial_json', '')
+                                        if current_tool_use and partial_json:
+                                            current_tool_use['input'] += partial_json
 
-                        elif event.type == 'content_block_stop':
-                            if current_tool_use:
-                                # Parse the accumulated JSON input
-                                try:
-                                    tool_input = json.loads(current_tool_use['input'])
-                                except json.JSONDecodeError:
-                                    tool_input = {}
+                            elif event.type == 'content_block_stop':
+                                if current_tool_use:
+                                    # Parse the accumulated JSON input
+                                    try:
+                                        tool_input = json.loads(current_tool_use['input'])
+                                    except json.JSONDecodeError:
+                                        tool_input = {}
 
-                                yield SSEEvent(
-                                    event_type='tool',
-                                    data={
+                                    tool_call = {
                                         'id': current_tool_use['id'],
                                         'name': current_tool_use['name'],
                                         'input': tool_input,
                                     }
-                                )
-                                current_tool_use = None
+                                    tool_calls_in_response.append(tool_call)
+                                    
+                                    # Yield tool event to frontend
+                                    yield SSEEvent(
+                                        event_type='tool',
+                                        data=tool_call
+                                    )
+                                    current_tool_use = None
 
-                        elif event.type == 'message_stop':
-                            yield SSEEvent(
-                                event_type='done',
-                                data={'total_text': accumulated_text}
-                            )
+                            elif event.type == 'message_stop':
+                                stop_reason = "end_turn"
+                                
+                            elif event.type == 'message_delta':
+                                delta = getattr(event, 'delta', None)
+                                if delta:
+                                    stop_reason = getattr(delta, 'stop_reason', stop_reason)
 
-        except Exception as exc:
-            logger.exception(f"Chat streaming failed: {exc}")
-            yield SSEEvent(
-                event_type='error',
-                data={'message': str(exc)}
-            )
+                    # After stream ends, check if we need to continue with tool results
+                    if not tool_calls_in_response:
+                        # No tool calls - we're done
+                        yield SSEEvent(
+                            event_type='done',
+                            data={'total_text': accumulated_text}
+                        )
+                        return
+                    
+                    # Execute tools and build tool results
+                    tool_results = []
+                    for tool_call in tool_calls_in_response:
+                        tool_name = tool_call['name']
+                        tool_input = tool_call['input']
+                        tool_id = tool_call['id']
+                        
+                        result_content = self._execute_tool(
+                            tool_name, tool_input, document_content
+                        )
+                        
+                        # Yield tool result event
+                        yield SSEEvent(
+                            event_type='tool_result',
+                            data={
+                                'id': tool_id,
+                                'name': tool_name,
+                                'result': result_content[:500] if len(result_content) > 500 else result_content,
+                            }
+                        )
+                        
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": result_content,
+                        })
+                    
+                    # Build assistant message with tool uses
+                    assistant_content = []
+                    if accumulated_text:
+                        assistant_content.append({
+                            "type": "text",
+                            "text": accumulated_text,
+                        })
+                    for tool_call in tool_calls_in_response:
+                        assistant_content.append({
+                            "type": "tool_use",
+                            "id": tool_call['id'],
+                            "name": tool_call['name'],
+                            "input": tool_call['input'],
+                        })
+                    
+                    # Add assistant response and tool results to messages for next iteration
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_content,
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": tool_results,
+                    })
+
+            except Exception as exc:
+                logger.exception(f"Chat streaming failed: {exc}")
+                yield SSEEvent(
+                    event_type='error',
+                    data={'message': str(exc)}
+                )
+                return
+        
+        # Max iterations reached
+        yield SSEEvent(
+            event_type='done',
+            data={'total_text': 'Reached maximum tool iterations'}
+        )
+
+    def _execute_tool(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        document_content: str,
+    ) -> str:
+        """Execute a tool and return the result as a string."""
+        
+        if tool_name == "read_document":
+            section = tool_input.get("section")
+            if section:
+                # Try to find the section in the document
+                lines = document_content.split('\n')
+                in_section = False
+                section_content = []
+                for line in lines:
+                    if line.startswith('#') and section.lower() in line.lower():
+                        in_section = True
+                    elif in_section and line.startswith('#'):
+                        break
+                    elif in_section:
+                        section_content.append(line)
+                if section_content:
+                    return '\n'.join(section_content)
+                return f"Section '{section}' not found. Full document:\n{document_content[:2000]}"
+            return document_content
+        
+        elif tool_name == "calculate":
+            expression = tool_input.get("expression", "")
+            description = tool_input.get("description", "")
+            result, error = safe_eval_math(expression)
+            if error:
+                return f"Calculation error: {error}"
+            return f"Result of {expression} = {result}" + (f" ({description})" if description else "")
+        
+        elif tool_name == "deep_research":
+            query = tool_input.get("query", "")
+            if not PERPLEXITY_API_KEY:
+                return "Deep research is not available (Perplexity API key not configured)"
+            try:
+                client = PerplexityClient(PERPLEXITY_API_KEY)
+                finding = client.query(query)
+                if finding:
+                    result = f"Research findings for: {query}\n\n{finding.content}"
+                    if finding.sources:
+                        result += "\n\nSources:\n" + "\n".join(f"- {s}" for s in finding.sources[:5])
+                    return result
+                return f"No research results found for: {query}"
+            except Exception as exc:
+                logger.exception(f"Deep research failed: {exc}")
+                return f"Research failed: {str(exc)}"
+        
+        elif tool_name == "str_replace_edit":
+            # str_replace_edit is handled by the frontend, just acknowledge
+            return "Edit suggestion recorded. The user will review and apply this change."
+        
+        elif tool_name == "highlight_ambiguity":
+            # highlight_ambiguity is handled by the frontend
+            return "Ambiguity highlighted. The user can see this in the document."
+        
+        elif tool_name == "create_version":
+            # create_version would need backend integration
+            return "Version creation noted. Use the Save button to create a new version."
+        
+        else:
+            return f"Unknown tool: {tool_name}"
 
     def apply_edit(
         self,

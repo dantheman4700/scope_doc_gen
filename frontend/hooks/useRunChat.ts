@@ -15,6 +15,7 @@ export interface ToolCall {
   name: string;
   input: Record<string, unknown>;
   status: "pending" | "applied" | "rejected";
+  result?: string;
 }
 
 export interface EditSuggestion {
@@ -190,10 +191,13 @@ export function useRunChat({
     
     try {
       // Build conversation history (exclude the placeholder)
-      const history = messages.map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
+      // Filter out messages with empty content to avoid Anthropic API errors
+      const history = messages
+        .filter(m => m.content && m.content.trim().length > 0)
+        .map(m => ({
+          role: m.role,
+          content: m.content,
+        }));
       
       // Send the staged content (with applied edits) to the AI
       const contentToSend = stagedEdits.length > 0 
@@ -330,6 +334,39 @@ export function useRunChat({
                           input: data.input,
                           status: "pending" as const,
                         }],
+                      }
+                    : m
+                ));
+              }
+              
+              if (data.name === "read_document" && data.input) {
+                // Read document tool call
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), {
+                          id: data.id || `read-${Date.now()}`,
+                          name: "read_document",
+                          input: data.input,
+                          status: "pending" as const,
+                        }],
+                      }
+                    : m
+                ));
+              }
+
+              // Handle tool_result events (update tool status to applied)
+              if (data.result !== undefined && data.id) {
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: m.toolCalls?.map(tc =>
+                          tc.id === data.id
+                            ? { ...tc, status: "applied" as const, result: data.result }
+                            : tc
+                        ),
                       }
                     : m
                 ));
