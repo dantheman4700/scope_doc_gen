@@ -10,6 +10,7 @@ from contextlib import contextmanager
 
 from pgvector.psycopg import Vector, register_vector
 from psycopg.types.json import Json
+from psycopg.rows import dict_row
 from sqlalchemy.engine import Engine
 
 
@@ -64,27 +65,31 @@ class VectorStore:
         
         Uses the same connection pool as all other database operations in the application.
         """
-        conn = None
+        conn_proxy = None
         try:
             # Get raw psycopg connection from SQLAlchemy pool
-            # This uses the same pool as SQLAlchemy ORM operations
-            conn = self.engine.raw_connection()
-            register_vector(conn)  # Enable pgvector support
-            yield conn
+            # raw_connection() returns a _ConnectionFairy proxy
+            conn_proxy = self.engine.raw_connection()
+            # Access the actual DBAPI connection underneath
+            dbapi_conn = conn_proxy.connection
+            register_vector(dbapi_conn)  # Enable pgvector support on the real connection
+            # Set row_factory to return dict-like rows for column name access
+            dbapi_conn.row_factory = dict_row
+            yield dbapi_conn
         except Exception:
             # If connection is bad, close it
-            if conn is not None:
+            if conn_proxy is not None:
                 try:
-                    conn.close()
+                    conn_proxy.close()
                 except Exception:
                     pass
             raise
         finally:
             # Return connection to SQLAlchemy pool
             # raw_connection() returns a proxy that handles cleanup automatically
-            if conn is not None:
+            if conn_proxy is not None:
                 try:
-                    conn.close()
+                    conn_proxy.close()
                 except Exception:
                     pass
 
@@ -197,7 +202,7 @@ class VectorStore:
         embedding: Sequence[float],
         project_id: Optional[UUID],
         run_id: UUID,
-        version_number: float,
+        version_number: Optional[float],
         doc_kind: str,
         chunk_index: int = 0,
         chunk_text: str = "",
@@ -316,6 +321,22 @@ class VectorStore:
                 )
             )
         return results
+
+    def count_run_embeddings(self, run_id: UUID) -> int:
+        """Count embeddings for a specific run."""
+        self._ensure_schema_lazy()
+        
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM scope_embeddings WHERE metadata->>'run_id' = %s",
+                        (str(run_id),),
+                    )
+                    row = cur.fetchone()
+                    return row[0] if row else 0
+                except Exception:
+                    return 0
 
     def delete_embeddings(self, embedding_ids: Iterable[UUID]) -> int:
         self._ensure_schema_lazy()  # Lazy schema creation

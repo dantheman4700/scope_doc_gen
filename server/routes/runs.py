@@ -89,6 +89,8 @@ class RunStatusResponse(BaseModel):
     google_doc_id: Optional[str] = None
     document_title: Optional[str] = None  # Extracted H1 from markdown
     questions_state: Optional[Dict[str, Any]] = None  # Persisted questions answers and lock state
+    is_indexed: bool = False  # Whether the workspace has been indexed for search
+    indexed_chunks: int = 0  # Number of indexed chunks
 
 
 class RunStepResponse(BaseModel):
@@ -210,7 +212,9 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
     google_doc_id = None
     document_title = None
     artifact = None
-    
+    is_indexed = False
+    indexed_chunks = 0
+
     if db and run.status == "success":
         artifact = (
             db.query(models.Artifact)
@@ -224,6 +228,16 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
                 google_doc_id = artifact.meta.get("google_doc_id")
             # Extract document title from markdown H1
             document_title = _extract_document_title(artifact.path, str(run.project_id))
+        
+        # Check indexing status
+        try:
+            from server.db.session import engine
+            from server.services.vector_store import VectorStore
+            vector_store = VectorStore(engine)
+            indexed_chunks = vector_store.count_run_embeddings(run.id)
+            is_indexed = indexed_chunks > 0
+        except Exception:
+            pass  # Silently ignore indexing status errors
     
     # Extract questions state from params
     questions_state = (run.params or {}).get("questions_state")
@@ -250,6 +264,8 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
         google_doc_id=google_doc_id,
         document_title=document_title,
         questions_state=questions_state,
+        is_indexed=is_indexed,
+        indexed_chunks=indexed_chunks,
     )
 
 
@@ -1091,7 +1107,8 @@ async def index_run_documents(
     """
     from server.db.session import engine
     from server.services.vector_store import VectorStore
-    from server.core.llm import get_embedder
+    from server.core.history_profiles import ProfileEmbedder
+    from server.core.config import HISTORY_EMBEDDING_MODEL
     
     run = db.get(models.Run, run_id)
     if not run:
@@ -1099,7 +1116,7 @@ async def index_run_documents(
 
     try:
         vector_store = VectorStore(engine)
-        embedder = get_embedder()
+        embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
         
         # Clear existing embeddings for this run
         deleted = vector_store.delete_run_embeddings(run_id)
@@ -1140,7 +1157,8 @@ async def index_run_documents(
                     document_content = artifact_path.read_text()
                     version_number = 1.0
         
-        # Chunk and embed the document
+        # Chunk and embed the output document
+        output_chunks = 0
         if document_content:
             # Simple chunking by paragraphs (could be improved)
             chunks = [c.strip() for c in document_content.split("\n\n") if c.strip()]
@@ -1150,9 +1168,9 @@ async def index_run_documents(
                     continue
                     
                 # Get embedding
-                embedding = embedder.embed_text(chunk)
+                embedding = list(embedder.embed(chunk))
                 
-                # Store embedding
+                # Store embedding with doc_type metadata
                 vector_store.upsert_run_embedding(
                     embedding=embedding,
                     project_id=run.project_id,
@@ -1161,15 +1179,86 @@ async def index_run_documents(
                     doc_kind="document_chunk",
                     chunk_index=i,
                     chunk_text=chunk,
+                    metadata={
+                        "doc_type": "output",
+                        "file_name": "scope_document",
+                    }
                 )
                 indexed_count += 1
+                output_chunks += 1
+        
+        # Index input files
+        input_chunks = 0
+        input_file_ids = run.included_file_ids or []
+        
+        if input_file_ids:
+            from server.core.ingest import DocumentIngester
+            ingester = DocumentIngester()
+            
+            for file_id in input_file_ids:
+                try:
+                    # Get the project file
+                    project_file = db.get(models.ProjectFile, file_id)
+                    if not project_file or not project_file.path:
+                        logger.warning(f"ProjectFile {file_id} not found or has no path")
+                        continue
+                    
+                    file_path = Path(project_file.path)
+                    if not file_path.exists():
+                        logger.warning(f"File path does not exist: {file_path}")
+                        continue
+                    
+                    # Use DocumentIngester to extract text
+                    doc_data = ingester.ingest_file(file_path)
+                    if not doc_data:
+                        logger.warning(f"Could not ingest file: {file_path}")
+                        continue
+                    
+                    # Handle list return (e.g., chunked PDFs)
+                    if isinstance(doc_data, list):
+                        text_content = "\n\n".join(d.get("content", "") for d in doc_data if d.get("content"))
+                    else:
+                        text_content = doc_data.get("content", "")
+                    
+                    if not text_content or len(text_content) < 10:
+                        continue
+                    
+                    # Chunk the content
+                    chunks = [c.strip() for c in text_content.split("\n\n") if c.strip() and len(c.strip()) > 10]
+                    
+                    for i, chunk in enumerate(chunks):
+                        embedding = list(embedder.embed(chunk))
+                        vector_store.upsert_run_embedding(
+                            embedding=embedding,
+                            project_id=run.project_id,
+                            run_id=run_id,
+                            version_number=None,  # Input files don't have versions
+                            doc_kind="input_chunk",
+                            chunk_index=i,
+                            chunk_text=chunk,
+                            metadata={
+                                "doc_type": "input",
+                                "file_name": project_file.filename,
+                                "file_id": str(file_id),
+                            }
+                        )
+                        indexed_count += 1
+                        input_chunks += 1
+                        
+                except Exception as file_exc:
+                    logger.exception(f"Failed to index input file {file_id}: {file_exc}")
+                    continue
+        
+        logger.info(f"Indexed {output_chunks} output chunks and {input_chunks} input chunks for run {run_id}")
         
         return {
             "success": True,
             "indexed_chunks": indexed_count,
+            "output_chunks": output_chunks,
+            "input_chunks": input_chunks,
             "deleted_old": deleted,
             "version": version_number or 1.0,
-            "message": f"Indexed {indexed_count} chunks for v{version_number or 1.0}",
+            "message": f"Indexed {indexed_count} chunks ({output_chunks} output, {input_chunks} input)",
         }
         
     except Exception as exc:

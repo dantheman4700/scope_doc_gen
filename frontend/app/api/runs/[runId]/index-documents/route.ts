@@ -11,6 +11,8 @@ export async function POST(
   const response = await apiFetchJson<{
     success: boolean;
     indexed_chunks: number;
+    output_chunks: number;
+    input_chunks: number;
     deleted_old: number;
     version: number;
     message: string;

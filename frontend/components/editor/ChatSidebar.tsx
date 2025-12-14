@@ -13,6 +13,7 @@ import {
   Search,
   Calculator,
   FileText,
+  FolderSearch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -113,6 +114,7 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
   const researchCalls = message.toolCalls?.filter(tc => tc.name === "deep_research") || [];
   const calculatorCalls = message.toolCalls?.filter(tc => tc.name === "calculate") || [];
   const readCalls = message.toolCalls?.filter(tc => tc.name === "read_document") || [];
+  const searchCalls = message.toolCalls?.filter(tc => tc.name === "search_workspace") || [];
   
   return (
     <div className="space-y-2">
@@ -136,6 +138,37 @@ function MessageContent({ message, pendingEdits, onApplyEdit, onRejectEdit }: {
             </div>
             {tc.status === "pending" && (
               <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+            )}
+            {tc.status === "applied" && (
+              <Check className="h-4 w-4 text-green-500" />
+            )}
+          </div>
+        </div>
+      ))}
+
+      {/* Workspace search indicators */}
+      {searchCalls.map(tc => (
+        <div key={tc.id} className="rounded-md border border-emerald-500/50 bg-emerald-50 p-3 text-xs dark:bg-emerald-950/30">
+          <div className="flex items-center gap-2">
+            <FolderSearch className={cn(
+              "h-4 w-4 text-emerald-600",
+              tc.status === "pending" && "animate-pulse"
+            )} />
+            <div className="flex-1">
+              <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                {tc.status === "pending" ? "Searching workspace..." : "Search Complete"}
+              </span>
+              <p className="text-emerald-600 dark:text-emerald-300 mt-0.5">
+                {(tc.input as { query?: string }).query}
+              </p>
+              {(tc.input as { doc_type?: string }).doc_type && (tc.input as { doc_type?: string }).doc_type !== "all" && (
+                <p className="text-muted-foreground text-xs mt-0.5">
+                  Filter: {(tc.input as { doc_type?: string }).doc_type} files
+                </p>
+              )}
+            </div>
+            {tc.status === "pending" && (
+              <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
             )}
             {tc.status === "applied" && (
               <Check className="h-4 w-4 text-green-500" />
@@ -296,30 +329,43 @@ export function ChatSidebar({
           </div>
         ) : (
           <div className="space-y-4">
-            {messages.map(message => (
-              <div
-                key={message.id}
-                className={cn(
-                  "rounded-lg p-3",
-                  message.role === "user" 
-                    ? "ml-4 bg-primary text-primary-foreground" 
-                    : "mr-4 bg-muted"
-                )}
-              >
-                <MessageContent
-                  message={message}
-                  pendingEdits={pendingEdits}
-                  onApplyEdit={onApplyEdit}
-                  onRejectEdit={onRejectEdit}
-                />
-              </div>
-            ))}
-            {isStreaming && messages[messages.length - 1]?.role === "assistant" && !messages[messages.length - 1]?.content && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Thinking...
-              </div>
-            )}
+            {messages.map((message, index) => {
+              const isLastMessage = index === messages.length - 1;
+              const isAssistant = message.role === "assistant";
+              const showStreamingIndicator = isStreaming && isLastMessage && isAssistant;
+              
+              return (
+                <div
+                  key={message.id}
+                  className={cn(
+                    "rounded-lg p-3",
+                    message.role === "user" 
+                      ? "ml-4 bg-primary text-primary-foreground" 
+                      : "mr-4 bg-muted"
+                  )}
+                >
+                  <MessageContent
+                    message={message}
+                    pendingEdits={pendingEdits}
+                    onApplyEdit={onApplyEdit}
+                    onRejectEdit={onRejectEdit}
+                  />
+                  {/* Streaming indicator - pulsing dots */}
+                  {showStreamingIndicator && (
+                    <div className="flex items-center gap-1.5 mt-3 pt-2 border-t border-border/50">
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" />
+                      </div>
+                      <span className="text-xs text-muted-foreground ml-1">
+                        {message.content ? "Processing..." : "Thinking..."}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         )}

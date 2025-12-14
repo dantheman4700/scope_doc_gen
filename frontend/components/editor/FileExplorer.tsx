@@ -16,7 +16,11 @@ import {
   Trash2,
   RotateCcw,
   Eye,
+  Database,
+  Loader2,
+  Check,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -70,6 +74,10 @@ interface FileExplorerProps {
   onVersionSelect: (version: number) => void;
   onVersionDelete?: (version: number) => void;
   onVersionRevert?: (version: number) => void;
+  isIndexed?: boolean;
+  isIndexing?: boolean;
+  indexedChunks?: number;
+  onIndexWorkspace?: () => void;
   className?: string;
 }
 
@@ -168,6 +176,10 @@ export function FileExplorer({
   onVersionSelect,
   onVersionDelete,
   onVersionRevert,
+  isIndexed = false,
+  isIndexing = false,
+  indexedChunks = 0,
+  onIndexWorkspace,
   className,
 }: FileExplorerProps) {
   const [expandedSections, setExpandedSections] = React.useState<Record<string, boolean>>({
@@ -423,6 +435,41 @@ export function FileExplorer({
           </div>
         )}
       </div>
+
+      {/* Index Workspace Button */}
+      {onIndexWorkspace && (
+        <div className="border-t border-border/50 p-3">
+          <Button
+            variant={isIndexed ? "outline" : "default"}
+            size="sm"
+            className="w-full"
+            onClick={onIndexWorkspace}
+            disabled={isIndexing}
+          >
+            {isIndexing ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Indexing...
+              </>
+            ) : isIndexed ? (
+              <>
+                <Check className="mr-2 h-3.5 w-3.5 text-green-500" />
+                Indexed ({indexedChunks})
+              </>
+            ) : (
+              <>
+                <Database className="mr-2 h-3.5 w-3.5" />
+                Index Workspace
+              </>
+            )}
+          </Button>
+          {isIndexed && (
+            <p className="mt-1 text-xs text-muted-foreground text-center">
+              AI can search {indexedChunks} chunks
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

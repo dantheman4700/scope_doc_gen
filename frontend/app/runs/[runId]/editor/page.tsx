@@ -27,6 +27,8 @@ interface RunData {
   project_id: string;
   status: string;
   template_type?: string;
+  is_indexed?: boolean;
+  indexed_chunks?: number;
 }
 
 interface VersionData {
@@ -53,6 +55,11 @@ export default function EditorPage() {
   const [previewFile, setPreviewFile] = useState<{ id: string; name: string; mediaType?: string; path?: string } | null>(null);
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
   const [pendingVersionSwitch, setPendingVersionSwitch] = useState<number | null>(null);
+  
+  // Indexing state
+  const [isIndexed, setIsIndexed] = useState(false);
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [indexedChunks, setIndexedChunks] = useState(0);
 
   // Chat hook
   const {
@@ -62,6 +69,7 @@ export default function EditorPage() {
     pendingEdits,
     stagedEdits,
     stagedContent,
+    ambiguityHighlights,
     sendMessage,
     stageEdit,
     unstageEdit,
@@ -106,6 +114,10 @@ export default function EditorPage() {
         if (!runRes.ok) throw new Error("Failed to load run");
         const runData = await runRes.json();
         setRun(runData);
+        
+        // Set indexing status from run data
+        setIsIndexed(runData.is_indexed || false);
+        setIndexedChunks(runData.indexed_chunks || 0);
 
         // Load versions
         const versionsRes = await fetch(`/api/runs/${runId}/versions`);
@@ -413,6 +425,37 @@ export default function EditorPage() {
     }
   }, [runId, currentVersion, toast, switchToVersion]);
 
+  // Handle workspace indexing
+  const handleIndexWorkspace = useCallback(async () => {
+    setIsIndexing(true);
+    try {
+      const res = await fetch(`/api/runs/${runId}/index-documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: currentVersion }),
+      });
+
+      if (!res.ok) throw new Error("Failed to index");
+
+      const data = await res.json();
+      setIsIndexed(true);
+      setIndexedChunks(data.indexed_chunks || 0);
+      
+      toast({
+        title: "Workspace Indexed",
+        description: data.message || `Indexed ${data.indexed_chunks} chunks`,
+      });
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: "Failed to index workspace",
+        variant: "destructive",
+      });
+    } finally {
+      setIsIndexing(false);
+    }
+  }, [runId, currentVersion, toast]);
+
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -504,6 +547,10 @@ export default function EditorPage() {
               }}
               onVersionSelect={handleVersionSelect}
               onVersionDelete={handleVersionDelete}
+              isIndexed={isIndexed}
+              isIndexing={isIndexing}
+              indexedChunks={indexedChunks}
+              onIndexWorkspace={handleIndexWorkspace}
             />
           }
           centerPanel={
@@ -517,6 +564,7 @@ export default function EditorPage() {
               pendingEdits={pendingEdits.filter(e => e.status === "pending")}
               onApplyEdit={handleApplyEdit}
               onRejectEdit={rejectEdit}
+              ambiguityHighlights={ambiguityHighlights}
             />
           }
           rightPanel={

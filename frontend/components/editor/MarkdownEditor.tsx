@@ -13,8 +13,119 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { EditSuggestion } from "@/hooks/useRunChat";
+import type { EditSuggestion, AmbiguityHighlight } from "@/hooks/useRunChat";
 import { CursorStyleDiff } from "./CursorStyleDiff";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AlertCircle } from "lucide-react";
+
+/**
+ * Component to render markdown with ambiguity highlights
+ */
+function HighlightedMarkdown({ 
+  content, 
+  highlights 
+}: { 
+  content: string; 
+  highlights: AmbiguityHighlight[];
+}) {
+  // Build segments: alternating between normal text and highlighted text
+  const segments = useMemo(() => {
+    if (highlights.length === 0) {
+      return [{ type: "text" as const, content }];
+    }
+
+    const result: Array<
+      | { type: "text"; content: string }
+      | { type: "highlight"; content: string; highlight: AmbiguityHighlight }
+    > = [];
+    
+    let remaining = content;
+    let lastIndex = 0;
+
+    // Sort highlights by their position in the content
+    const sortedHighlights = [...highlights].sort((a, b) => {
+      const aIdx = content.indexOf(a.text);
+      const bIdx = content.indexOf(b.text);
+      return aIdx - bIdx;
+    });
+
+    for (const highlight of sortedHighlights) {
+      const idx = remaining.indexOf(highlight.text);
+      if (idx === -1) continue; // Text not found in remaining content
+
+      // Add text before the highlight
+      if (idx > 0) {
+        result.push({ type: "text", content: remaining.slice(0, idx) });
+      }
+
+      // Add the highlighted segment
+      result.push({ 
+        type: "highlight", 
+        content: highlight.text, 
+        highlight 
+      });
+
+      // Update remaining
+      remaining = remaining.slice(idx + highlight.text.length);
+    }
+
+    // Add any remaining text
+    if (remaining) {
+      result.push({ type: "text", content: remaining });
+    }
+
+    return result;
+  }, [content, highlights]);
+
+  return (
+    <TooltipProvider>
+      <div className="whitespace-pre-wrap">
+        {segments.map((segment, idx) => {
+          if (segment.type === "text") {
+            return (
+              <ReactMarkdown key={idx} remarkPlugins={[remarkGfm]}>
+                {segment.content}
+              </ReactMarkdown>
+            );
+          }
+
+          // Highlighted segment with tooltip
+          return (
+            <Tooltip key={idx}>
+              <TooltipTrigger asChild>
+                <span className="bg-yellow-200 dark:bg-yellow-900/50 border-b-2 border-yellow-500 cursor-help px-0.5 rounded-sm inline">
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      // Render inline to avoid block-level elements breaking the highlight
+                      p: ({ children }) => <span>{children}</span>,
+                    }}
+                  >
+                    {segment.content}
+                  </ReactMarkdown>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-sm">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1 font-medium text-yellow-700 dark:text-yellow-400">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Ambiguity Detected
+                  </div>
+                  <p className="text-sm">{segment.highlight.concern}</p>
+                  {segment.highlight.suggestion && (
+                    <p className="text-xs text-muted-foreground italic">
+                      Suggestion: {segment.highlight.suggestion}
+                    </p>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </TooltipProvider>
+  );
+}
 
 interface MarkdownEditorProps {
   content: string;
@@ -26,6 +137,7 @@ interface MarkdownEditorProps {
   pendingEdits?: EditSuggestion[];
   onApplyEdit?: (edit: EditSuggestion) => void;
   onRejectEdit?: (editId: string) => void;
+  ambiguityHighlights?: AmbiguityHighlight[];
   className?: string;
   readOnly?: boolean;
 }
@@ -40,6 +152,7 @@ export function MarkdownEditor({
   pendingEdits = [],
   onApplyEdit,
   onRejectEdit,
+  ambiguityHighlights = [],
   className,
   readOnly = false,
 }: MarkdownEditorProps) {
@@ -214,9 +327,16 @@ export function MarkdownEditor({
           // Regular markdown preview when no pending edits
           <div className="h-full overflow-y-auto p-6">
             <article className="prose dark:prose-invert mx-auto max-w-4xl prose-headings:mt-8 prose-headings:mb-4 prose-p:my-4 prose-li:my-1 prose-pre:my-4 prose-ul:my-4 prose-ol:my-4">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {localContent}
-              </ReactMarkdown>
+              {ambiguityHighlights.length > 0 ? (
+                <HighlightedMarkdown 
+                  content={localContent} 
+                  highlights={ambiguityHighlights} 
+                />
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {localContent}
+                </ReactMarkdown>
+              )}
             </article>
           </div>
         )}

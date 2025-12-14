@@ -153,6 +153,25 @@ DOCUMENT_TOOLS = [
             "required": ["expression"],
         },
     },
+    {
+        "name": "search_workspace",
+        "description": "Search across all indexed input files and document versions for this run. Use when you need information from uploaded files like meeting notes, SOWs, requirements docs, transcripts, or other input materials. Also useful for cross-referencing multiple documents or finding specific details mentioned in the source materials.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Semantic search query describing what you're looking for (e.g., 'timeline requirements', 'budget constraints', 'technical specifications')",
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": ["input", "output", "all"],
+                    "description": "Filter by document type. Use 'input' for uploaded source files, 'output' for the main scope document, 'all' for everything. Default: all",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -395,6 +414,9 @@ Be concise and helpful. Focus on improving the document quality."""
                         return
                     
                     # Execute tools and build tool results
+                    # Extract run_id from context for workspace search
+                    run_id_str = run_context.get("run_id") if run_context else None
+                    
                     tool_results = []
                     for tool_call in tool_calls_in_response:
                         tool_name = tool_call['name']
@@ -402,7 +424,7 @@ Be concise and helpful. Focus on improving the document quality."""
                         tool_id = tool_call['id']
                         
                         result_content = self._execute_tool(
-                            tool_name, tool_input, document_content
+                            tool_name, tool_input, document_content, run_id=run_id_str
                         )
                         
                         # Yield tool result event
@@ -465,9 +487,10 @@ Be concise and helpful. Focus on improving the document quality."""
         tool_name: str,
         tool_input: Dict[str, Any],
         document_content: str,
+        run_id: Optional[str] = None,
     ) -> str:
         """Execute a tool and return the result as a string."""
-        
+
         if tool_name == "read_document":
             section = tool_input.get("section")
             if section:
@@ -523,6 +546,61 @@ Be concise and helpful. Focus on improving the document quality."""
         elif tool_name == "create_version":
             # create_version would need backend integration
             return "Version creation noted. Use the Save button to create a new version."
+        
+        elif tool_name == "search_workspace":
+            if not run_id:
+                return "Workspace search not available - no run context"
+            
+            query = tool_input.get("query", "")
+            doc_type = tool_input.get("doc_type", "all")
+            
+            if not query:
+                return "Search query is required"
+            
+            try:
+                from uuid import UUID
+                from server.db.session import engine
+                from server.services.vector_store import VectorStore
+                from server.core.history_profiles import ProfileEmbedder
+                from server.core.config import HISTORY_EMBEDDING_MODEL
+                
+                embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+                vector_store = VectorStore(engine)
+                
+                # Get embedding for the query
+                embedding = list(embedder.embed(query))
+                
+                # Search the vector store for this run
+                results = vector_store.similarity_search_run(
+                    embedding=embedding,
+                    run_id=UUID(run_id) if isinstance(run_id, str) else run_id,
+                    top_k=5,
+                )
+                
+                if not results:
+                    return f"No relevant content found for: {query}"
+                
+                # Filter by doc_type if specified
+                if doc_type != "all":
+                    results = [r for r in results if r.metadata.get("doc_type") == doc_type]
+                
+                if not results:
+                    return f"No {doc_type} documents found matching: {query}"
+                
+                # Format results
+                formatted = []
+                for r in results:
+                    meta = r.metadata
+                    file_name = meta.get("file_name", "document")
+                    chunk_text = meta.get("chunk_text", "")
+                    doc_type_label = meta.get("doc_type", "unknown")
+                    formatted.append(f"[{file_name} ({doc_type_label})]:\n{chunk_text}")
+                
+                return "\n\n---\n\n".join(formatted)
+                
+            except Exception as exc:
+                logger.exception(f"Workspace search failed: {exc}")
+                return f"Search failed: {str(exc)}"
         
         else:
             return f"Unknown tool: {tool_name}"

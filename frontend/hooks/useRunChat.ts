@@ -26,6 +26,13 @@ export interface EditSuggestion {
   status: "pending" | "staged" | "applied" | "rejected";
 }
 
+export interface AmbiguityHighlight {
+  id: string;
+  text: string;
+  concern: string;
+  suggestion?: string;
+}
+
 interface UseRunChatOptions {
   runId: string;
   documentContent: string;
@@ -41,6 +48,7 @@ interface UseRunChatReturn {
   pendingEdits: EditSuggestion[];
   stagedEdits: EditSuggestion[];
   stagedContent: string;
+  ambiguityHighlights: AmbiguityHighlight[];
   sendMessage: (message: string) => Promise<void>;
   stageEdit: (edit: EditSuggestion) => void;
   unstageEdit: (editId: string) => void;
@@ -159,6 +167,28 @@ export function useRunChat({
     if (stagedEdits.length === 0) return documentContent;
     return applyAllEdits(documentContent, stagedEdits);
   }, [documentContent, stagedEdits]);
+
+  // Extract ambiguity highlights from all messages
+  const ambiguityHighlights = useMemo<AmbiguityHighlight[]>(() => {
+    const highlights: AmbiguityHighlight[] = [];
+    for (const message of messages) {
+      if (!message.toolCalls) continue;
+      for (const tc of message.toolCalls) {
+        if (tc.name === "highlight_ambiguity" && tc.input) {
+          const input = tc.input as { text?: string; concern?: string; suggestion?: string };
+          if (input.text && input.concern) {
+            highlights.push({
+              id: tc.id,
+              text: input.text,
+              concern: input.concern,
+              suggestion: input.suggestion,
+            });
+          }
+        }
+      }
+    }
+    return highlights;
+  }, [messages]);
 
   const sendMessage = useCallback(async (message: string) => {
     if (!message.trim()) return;
@@ -356,6 +386,23 @@ export function useRunChat({
                 ));
               }
 
+              if (data.name === "search_workspace" && data.input) {
+                // Workspace search tool call
+                setMessages(prev => prev.map(m =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), {
+                          id: data.id || `search-${Date.now()}`,
+                          name: "search_workspace",
+                          input: data.input,
+                          status: "pending" as const,
+                        }],
+                      }
+                    : m
+                ));
+              }
+
               // Handle tool_result events (update tool status to applied)
               if (data.result !== undefined && data.id) {
                 setMessages(prev => prev.map(m =>
@@ -535,6 +582,7 @@ export function useRunChat({
     pendingEdits,
     stagedEdits,
     stagedContent,
+    ambiguityHighlights,
     sendMessage,
     stageEdit,
     unstageEdit,
