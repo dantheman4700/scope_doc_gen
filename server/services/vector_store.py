@@ -66,6 +66,7 @@ class VectorStore:
         Uses the same connection pool as all other database operations in the application.
         """
         conn_proxy = None
+        original_row_factory = None
         try:
             # Get raw psycopg connection from SQLAlchemy pool
             # raw_connection() returns a _ConnectionFairy proxy
@@ -73,7 +74,8 @@ class VectorStore:
             # Access the actual DBAPI connection underneath
             dbapi_conn = conn_proxy.connection
             register_vector(dbapi_conn)  # Enable pgvector support on the real connection
-            # Set row_factory to return dict-like rows for column name access
+            # Save and set row_factory to return dict-like rows for column name access
+            original_row_factory = dbapi_conn.row_factory
             dbapi_conn.row_factory = dict_row
             yield dbapi_conn
         except Exception:
@@ -85,9 +87,18 @@ class VectorStore:
                     pass
             raise
         finally:
-            # Return connection to SQLAlchemy pool
-            # raw_connection() returns a proxy that handles cleanup automatically
+            # IMPORTANT: Restore original row_factory before returning to pool
+            # Otherwise it corrupts SQLAlchemy ORM queries that reuse this connection
             if conn_proxy is not None:
+                try:
+                    dbapi_conn = conn_proxy.connection
+                    if original_row_factory is not None:
+                        dbapi_conn.row_factory = original_row_factory
+                    else:
+                        # Reset to default (tuple rows)
+                        dbapi_conn.row_factory = None
+                except Exception:
+                    pass
                 try:
                     conn_proxy.close()
                 except Exception:

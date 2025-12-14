@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState, useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useEffect, useCallback } from "react";
 import { 
   FolderOpen, 
   FileText, 
@@ -55,6 +55,26 @@ export function Sidebar({ user }: SidebarProps) {
     }
     return pathname === href || pathname.startsWith(href + "/");
   };
+
+  const router = useRouter();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = useCallback(async () => {
+    setLoggingOut(true);
+    try {
+      await fetch("/api/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+      router.push("/login");
+      router.refresh();
+    } catch {
+      // Still redirect on error
+      router.push("/login");
+    } finally {
+      setLoggingOut(false);
+    }
+  }, [router]);
 
   return (
     <aside
@@ -135,17 +155,19 @@ export function Sidebar({ user }: SidebarProps) {
               </div>
             )}
             
-            <Link
-              href="/api/logout"
+            <button
+              onClick={handleLogout}
+              disabled={loggingOut}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors",
-                collapsed && "justify-center px-2"
+                "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors",
+                collapsed && "justify-center px-2",
+                loggingOut && "opacity-50 cursor-not-allowed"
               )}
               title={collapsed ? "Sign out" : undefined}
             >
               <LogOut className="h-5 w-5 shrink-0" />
-              {!collapsed && <span>Sign out</span>}
-            </Link>
+              {!collapsed && <span>{loggingOut ? "Signing out..." : "Sign out"}</span>}
+            </button>
           </div>
         ) : (
           <Link

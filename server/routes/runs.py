@@ -212,8 +212,6 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
     google_doc_id = None
     document_title = None
     artifact = None
-    is_indexed = False
-    indexed_chunks = 0
 
     if db and run.status == "success":
         artifact = (
@@ -229,15 +227,9 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
             # Extract document title from markdown H1
             document_title = _extract_document_title(artifact.path, str(run.project_id))
         
-        # Check indexing status
-        try:
-            from server.db.session import engine
-            from server.services.vector_store import VectorStore
-            vector_store = VectorStore(engine)
-            indexed_chunks = vector_store.count_run_embeddings(run.id)
-            is_indexed = indexed_chunks > 0
-        except Exception:
-            pass  # Silently ignore indexing status errors
+        # NOTE: Removed indexing status check from here - it was creating
+        # a VectorStore for every run in listings, exhausting the connection pool.
+        # The is_indexed status is now only fetched on-demand in the editor.
     
     # Extract questions state from params
     questions_state = (run.params or {}).get("questions_state")
@@ -264,8 +256,9 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
         google_doc_id=google_doc_id,
         document_title=document_title,
         questions_state=questions_state,
-        is_indexed=is_indexed,
-        indexed_chunks=indexed_chunks,
+        # is_indexed is fetched on-demand in editor, not in listings
+        is_indexed=False,
+        indexed_chunks=0,
     )
 
 
@@ -1093,6 +1086,36 @@ async def delete_version(
 class IndexDocumentsRequest(BaseModel):
     """Request for indexing documents for a run."""
     version: Optional[float] = Field(None, description="Version to index (default: latest)")
+
+
+class IndexStatusResponse(BaseModel):
+    """Response for indexing status."""
+    is_indexed: bool = False
+    indexed_chunks: int = 0
+
+
+@run_router.get("/{run_id}/index-status", response_model=IndexStatusResponse)
+async def get_index_status(
+    run_id: UUID,
+    db: Session = Depends(db_session),
+):
+    """Get the indexing status for a run (lightweight endpoint for editor)."""
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    
+    try:
+        from server.db.session import engine
+        from server.services.vector_store import VectorStore
+        vector_store = VectorStore(engine)
+        indexed_chunks = vector_store.count_run_embeddings(run_id)
+        return IndexStatusResponse(
+            is_indexed=indexed_chunks > 0,
+            indexed_chunks=indexed_chunks,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to get index status for run {run_id}: {exc}")
+        return IndexStatusResponse(is_indexed=False, indexed_chunks=0)
 
 
 @run_router.post("/{run_id}/index-documents")

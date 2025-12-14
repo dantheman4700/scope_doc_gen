@@ -114,10 +114,18 @@ export default function EditorPage() {
         if (!runRes.ok) throw new Error("Failed to load run");
         const runData = await runRes.json();
         setRun(runData);
-        
-        // Set indexing status from run data
-        setIsIndexed(runData.is_indexed || false);
-        setIndexedChunks(runData.indexed_chunks || 0);
+
+        // Fetch indexing status separately (lightweight endpoint)
+        try {
+          const indexRes = await fetch(`/api/runs/${runId}/index-status`);
+          if (indexRes.ok) {
+            const indexData = await indexRes.json();
+            setIsIndexed(indexData.is_indexed || false);
+            setIndexedChunks(indexData.indexed_chunks || 0);
+          }
+        } catch {
+          // Silently ignore - not critical for editor function
+        }
 
         // Load versions
         const versionsRes = await fetch(`/api/runs/${runId}/versions`);
