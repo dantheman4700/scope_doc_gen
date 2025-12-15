@@ -85,7 +85,10 @@ export function Sidebar({ user }: SidebarProps) {
       )}
     >
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between border-b border-border px-4">
+      <div className={cn(
+        "border-b border-border",
+        collapsed ? "flex flex-col items-center py-3 gap-2" : "flex h-16 items-center justify-between px-4"
+      )}>
         <Link href="/projects" className={cn(
           "flex items-center gap-2",
           collapsed && "justify-center"
@@ -93,8 +96,8 @@ export function Sidebar({ user }: SidebarProps) {
           <Image 
             src="/logo.png" 
             alt="ThinkBot" 
-            width={32} 
-            height={32} 
+            width={collapsed ? 28 : 32} 
+            height={collapsed ? 28 : 32} 
             className="shrink-0"
           />
           {!collapsed && (
@@ -106,10 +109,7 @@ export function Sidebar({ user }: SidebarProps) {
         </Link>
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            collapsed && "absolute right-2"
-          )}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
