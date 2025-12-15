@@ -60,6 +60,10 @@ export default function EditorPage() {
   const [isIndexed, setIsIndexed] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
   const [indexedChunks, setIndexedChunks] = useState(0);
+  const [indexProgress, setIndexProgress] = useState(0);
+  const [indexStatus, setIndexStatus] = useState("");
+  const [indexedFileNames, setIndexedFileNames] = useState<string[]>([]);
+  const [indexedVersion, setIndexedVersion] = useState<number | null>(null);
 
   // Chat hook
   const {
@@ -122,6 +126,8 @@ export default function EditorPage() {
             const indexData = await indexRes.json();
             setIsIndexed(indexData.is_indexed || false);
             setIndexedChunks(indexData.indexed_chunks || 0);
+            setIndexedFileNames(indexData.indexed_files || []);
+            setIndexedVersion(indexData.indexed_version || null);
           }
         } catch {
           // Silently ignore - not critical for editor function
@@ -433,34 +439,80 @@ export default function EditorPage() {
     }
   }, [runId, currentVersion, toast, switchToVersion]);
 
-  // Handle workspace indexing
+  // Handle workspace indexing with streaming progress
   const handleIndexWorkspace = useCallback(async () => {
     setIsIndexing(true);
+    setIndexProgress(0);
+    setIndexStatus("Starting...");
+    
     try {
-      const res = await fetch(`/api/runs/${runId}/index-documents`, {
+      const res = await fetch(`/api/runs/${runId}/index-documents-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ version: currentVersion }),
       });
 
-      if (!res.ok) throw new Error("Failed to index");
+      if (!res.ok) throw new Error("Failed to start indexing");
 
-      const data = await res.json();
-      setIsIndexed(true);
-      setIndexedChunks(data.indexed_chunks || 0);
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
       
-      toast({
-        title: "Workspace Indexed",
-        description: data.message || `Indexed ${data.indexed_chunks} chunks`,
-      });
+      if (!reader) throw new Error("No response body");
+      
+      let buffer = "";
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+        
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === "status") {
+                setIndexStatus(data.message);
+              } else if (data.type === "progress") {
+                setIndexProgress(data.percent);
+                if (data.file) {
+                  setIndexStatus(`Indexing: ${data.file}`);
+                } else {
+                  setIndexStatus(`Processing ${data.phase} chunks...`);
+                }
+              } else if (data.type === "complete") {
+                setIsIndexed(true);
+                setIndexedChunks(data.indexed_chunks || 0);
+                setIndexedFileNames(data.indexed_files || []);
+                setIndexedVersion(currentVersion);  // The version we just indexed
+                setIndexProgress(100);
+                setIndexStatus("");
+                toast({
+                  title: "Workspace Indexed",
+                  description: data.message || `Indexed ${data.indexed_chunks} chunks`,
+                });
+              } else if (data.type === "error") {
+                throw new Error(data.message);
+              }
+            } catch (parseErr) {
+              // Ignore parse errors for incomplete data
+            }
+          }
+        }
+      }
     } catch (err) {
       toast({
         title: "Error",
-        description: "Failed to index workspace",
+        description: err instanceof Error ? err.message : "Failed to index workspace",
         variant: "destructive",
       });
     } finally {
       setIsIndexing(false);
+      setIndexProgress(0);
+      setIndexStatus("");
     }
   }, [runId, currentVersion, toast]);
 
@@ -558,6 +610,10 @@ export default function EditorPage() {
               isIndexed={isIndexed}
               isIndexing={isIndexing}
               indexedChunks={indexedChunks}
+              indexProgress={indexProgress}
+              indexStatus={indexStatus}
+              indexedFileNames={indexedFileNames}
+              indexedVersion={indexedVersion}
               onIndexWorkspace={handleIndexWorkspace}
             />
           }

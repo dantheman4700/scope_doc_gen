@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback } from "react";
 import { 
@@ -85,17 +86,29 @@ export function Sidebar({ user }: SidebarProps) {
     >
       {/* Logo */}
       <div className="flex h-16 items-center justify-between border-b border-border px-4">
-        {!collapsed && (
-          <Link href="/projects" className="flex items-baseline gap-2">
-            <span className="text-lg font-semibold text-foreground">ScopeGen</span>
-            <span className="text-xs text-muted-foreground">v{APP_VERSION}</span>
-          </Link>
-        )}
+        <Link href="/projects" className={cn(
+          "flex items-center gap-2",
+          collapsed && "justify-center"
+        )}>
+          <Image 
+            src="/logo.png" 
+            alt="ThinkBot" 
+            width={32} 
+            height={32} 
+            className="shrink-0"
+          />
+          {!collapsed && (
+            <div className="flex items-baseline gap-2">
+              <span className="text-lg font-semibold text-foreground">ScopeGen</span>
+              <span className="text-xs text-muted-foreground">v{APP_VERSION}</span>
+            </div>
+          )}
+        </Link>
         <button
           onClick={() => setCollapsed(!collapsed)}
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            collapsed && "mx-auto"
+            collapsed && "absolute right-2"
           )}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >

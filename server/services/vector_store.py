@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 from uuid import UUID, uuid4
 from contextlib import contextmanager
 
@@ -341,13 +341,76 @@ class VectorStore:
             with conn.cursor() as cur:
                 try:
                     cur.execute(
-                        "SELECT COUNT(*) FROM scope_embeddings WHERE metadata->>'run_id' = %s",
+                        "SELECT COUNT(*) as cnt FROM scope_embeddings WHERE metadata->>'run_id' = %s",
                         (str(run_id),),
                     )
                     row = cur.fetchone()
+                    if row is None:
+                        return 0
+                    # Handle both dict (dict_row) and tuple row types
+                    if isinstance(row, dict):
+                        return row.get("cnt", 0)
                     return row[0] if row else 0
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"count_run_embeddings failed: {e}")
                     return 0
+
+    def get_indexed_file_names(self, run_id: UUID) -> List[str]:
+        """Get list of unique file names that are indexed for a run."""
+        self._ensure_schema_lazy()
+        
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT metadata->>'file_name' as file_name 
+                        FROM scope_embeddings 
+                        WHERE metadata->>'run_id' = %s 
+                          AND metadata->>'doc_type' = 'input'
+                          AND metadata->>'file_name' IS NOT NULL
+                        """,
+                        (str(run_id),),
+                    )
+                    rows = cur.fetchall()
+                    if not rows:
+                        return []
+                    # Handle both dict and tuple row types
+                    if isinstance(rows[0], dict):
+                        return [r.get("file_name") for r in rows if r.get("file_name")]
+                    return [r[0] for r in rows if r[0]]
+                except Exception as e:
+                    logger.warning(f"get_indexed_file_names failed: {e}")
+                    return []
+
+    def get_indexed_version(self, run_id: UUID) -> Optional[float]:
+        """Get the version number of the indexed output document for a run."""
+        self._ensure_schema_lazy()
+        
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT (metadata->>'version_number')::float as version_number 
+                        FROM scope_embeddings 
+                        WHERE metadata->>'run_id' = %s 
+                          AND metadata->>'doc_type' = 'output'
+                          AND metadata->>'version_number' IS NOT NULL
+                        LIMIT 1
+                        """,
+                        (str(run_id),),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    # Handle both dict and tuple row types
+                    if isinstance(row, dict):
+                        return row.get("version_number")
+                    return row[0] if row[0] else None
+                except Exception as e:
+                    logger.warning(f"get_indexed_version failed: {e}")
+                    return None
 
     def delete_embeddings(self, embedding_ids: Iterable[UUID]) -> int:
         self._ensure_schema_lazy()  # Lazy schema creation

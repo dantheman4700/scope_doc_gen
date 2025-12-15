@@ -77,6 +77,10 @@ interface FileExplorerProps {
   isIndexed?: boolean;
   isIndexing?: boolean;
   indexedChunks?: number;
+  indexProgress?: number; // 0-100
+  indexStatus?: string;  // Status message during indexing
+  indexedFileNames?: string[];  // List of indexed file names
+  indexedVersion?: number | null;  // Which version is indexed
   onIndexWorkspace?: () => void;
   className?: string;
 }
@@ -95,6 +99,7 @@ function VersionButton({
   label,
   isActive,
   isMajor,
+  isVersionIndexed,
   onClick,
   onDelete,
   onRevert,
@@ -104,6 +109,7 @@ function VersionButton({
   label: string;
   isActive: boolean;
   isMajor: boolean;
+  isVersionIndexed?: boolean;
   onClick: () => void;
   onDelete?: () => void;
   onRevert?: () => void;
@@ -123,6 +129,7 @@ function VersionButton({
             isActive && "bg-muted",
             className
           )}
+          title={isVersionIndexed ? `${label} (indexed for AI search)` : label}
         >
           <FileText className={cn(
             isMajor ? "h-3.5 w-3.5" : "h-3 w-3",
@@ -130,13 +137,16 @@ function VersionButton({
             isMajor ? "text-blue-500" : "text-muted-foreground"
           )} />
           <span className={cn(
-            "text-xs",
+            "text-xs flex-1",
             isMajor ? "font-medium" : "text-muted-foreground"
           )}>
             {label}
           </span>
+          {isVersionIndexed && (
+            <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" title="Indexed" />
+          )}
           {isActive && (
-            <span className="ml-auto text-xs text-green-600">Active</span>
+            <span className="text-xs text-green-600">Active</span>
           )}
         </button>
       </ContextMenuTrigger>
@@ -179,6 +189,10 @@ export function FileExplorer({
   isIndexed = false,
   isIndexing = false,
   indexedChunks = 0,
+  indexProgress = 0,
+  indexStatus = "",
+  indexedFileNames = [],
+  indexedVersion = null,
   onIndexWorkspace,
   className,
 }: FileExplorerProps) {
@@ -205,6 +219,12 @@ export function FileExplorer({
   // Check if a version is active (handles float comparison)
   const isVersionActive = (version: number) => {
     return Math.abs(currentVersion - version) < 0.001;
+  };
+
+  // Check if a version is the indexed one
+  const isVersionTheIndexed = (version: number) => {
+    if (indexedVersion === null) return false;
+    return Math.abs(indexedVersion - version) < 0.001;
   };
 
   // Group versions by major version
@@ -281,20 +301,28 @@ export function FileExplorer({
                 No input files
               </div>
             ) : (
-              inputFiles.map(file => (
-                <button
-                  key={file.id}
-                  onClick={() => onFileSelect(file)}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-7 py-1.5 text-left hover:bg-muted/50",
-                    file.isActive && "bg-muted"
-                  )}
-                  title={file.name}
-                >
-                  {getFileIcon(file.name, file.mediaType)}
-                  <span className="truncate text-xs">{file.name}</span>
-                </button>
-              ))
+              inputFiles.map(file => {
+                const isFileIndexed = indexedFileNames.some(
+                  name => name.toLowerCase() === file.name.toLowerCase()
+                );
+                return (
+                  <button
+                    key={file.id}
+                    onClick={() => onFileSelect(file)}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-7 py-1.5 text-left hover:bg-muted/50",
+                      file.isActive && "bg-muted"
+                    )}
+                    title={file.name + (isFileIndexed ? " (indexed)" : " (not indexed)")}
+                  >
+                    {getFileIcon(file.name, file.mediaType)}
+                    <span className="truncate text-xs flex-1">{file.name}</span>
+                    {isFileIndexed && (
+                      <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" title="Indexed" />
+                    )}
+                  </button>
+                );
+              })
             )}
           </div>
         )}
@@ -326,6 +354,7 @@ export function FileExplorer({
                 label="v1 (Original)"
                 isActive={isVersionActive(1)}
                 isMajor={true}
+                isVersionIndexed={isVersionTheIndexed(1)}
                 onClick={() => onVersionSelect(1)}
                 onDelete={onVersionDelete ? () => onVersionDelete(1) : undefined}
                 onRevert={onVersionRevert ? () => onVersionRevert(1) : undefined}
@@ -361,6 +390,7 @@ export function FileExplorer({
                             label={formatVersion(vNum)}
                             isActive={isVersionActive(vNum)}
                             isMajor={false}
+                            isVersionIndexed={isVersionTheIndexed(vNum)}
                             onClick={() => onVersionSelect(vNum)}
                             onDelete={onVersionDelete ? () => onVersionDelete(vNum) : undefined}
                             onRevert={onVersionRevert ? () => onVersionRevert(vNum) : undefined}
@@ -383,6 +413,7 @@ export function FileExplorer({
                     label={`v${group.major}`}
                     isActive={isVersionActive(group.major)}
                     isMajor={true}
+                    isVersionIndexed={isVersionTheIndexed(group.major)}
                     onClick={() => onVersionSelect(group.major)}
                     onDelete={onVersionDelete ? () => onVersionDelete(group.major) : undefined}
                     onRevert={onVersionRevert ? () => onVersionRevert(group.major) : undefined}
@@ -420,6 +451,7 @@ export function FileExplorer({
                                   label={formatVersion(vNum)}
                                   isActive={isVersionActive(vNum)}
                                   isMajor={false}
+                                  isVersionIndexed={isVersionTheIndexed(vNum)}
                                   onClick={() => onVersionSelect(vNum)}
                                   onDelete={onVersionDelete ? () => onVersionDelete(vNum) : undefined}
                                   onRevert={onVersionRevert ? () => onVersionRevert(vNum) : undefined}
@@ -442,28 +474,42 @@ export function FileExplorer({
           <Button
             variant={isIndexed ? "outline" : "default"}
             size="sm"
-            className="w-full"
+            className="w-full relative overflow-hidden"
             onClick={onIndexWorkspace}
             disabled={isIndexing}
           >
-            {isIndexing ? (
-              <>
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Indexing...
-              </>
-            ) : isIndexed ? (
-              <>
-                <Check className="mr-2 h-3.5 w-3.5 text-green-500" />
-                Indexed ({indexedChunks})
-              </>
-            ) : (
-              <>
-                <Database className="mr-2 h-3.5 w-3.5" />
-                Index Workspace
-              </>
+            {/* Progress bar background */}
+            {isIndexing && indexProgress > 0 && (
+              <div 
+                className="absolute inset-0 bg-primary/20 transition-all duration-300"
+                style={{ width: `${indexProgress}%` }}
+              />
             )}
+            <span className="relative flex items-center justify-center">
+              {isIndexing ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  {indexProgress > 0 ? `${indexProgress}%` : "Starting..."}
+                </>
+              ) : isIndexed ? (
+                <>
+                  <Check className="mr-2 h-3.5 w-3.5 text-green-500" />
+                  Indexed ({indexedChunks})
+                </>
+              ) : (
+                <>
+                  <Database className="mr-2 h-3.5 w-3.5" />
+                  Index Workspace
+                </>
+              )}
+            </span>
           </Button>
-          {isIndexed && (
+          {isIndexing && indexStatus && (
+            <p className="mt-1 text-xs text-muted-foreground text-center break-words" title={indexStatus}>
+              {indexStatus}
+            </p>
+          )}
+          {isIndexed && !isIndexing && (
             <p className="mt-1 text-xs text-muted-foreground text-center">
               AI can search {indexedChunks} chunks
             </p>

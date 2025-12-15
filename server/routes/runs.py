@@ -212,7 +212,7 @@ def _db_run_to_response(run: models.Run, db: Optional[Session] = None) -> RunSta
     google_doc_id = None
     document_title = None
     artifact = None
-
+    
     if db and run.status == "success":
         artifact = (
             db.query(models.Artifact)
@@ -856,29 +856,56 @@ async def save_run_markdown(
     step = _create_step(db, run_id, f"Edit Markdown v{base_version} → v{next_version}")
     
     try:
-        # Create a new RunVersion entry for this sub-version
-        new_version = models.RunVersion(
-            run_id=run_id,
-            version_number=next_version,
-            markdown=request.markdown,
-            feedback={"parent_version": base_version, "edit_number": sub_version},
-            questions_for_expert=[],
-            questions_for_client=[],
-            graphic_path=None,
-            regen_context=f"Manual edit of v{base_version}",
+        # Check if this version already exists (prevent duplicates)
+        existing_version = (
+            db.query(models.RunVersion)
+            .filter(
+                models.RunVersion.run_id == run_id,
+                models.RunVersion.version_number == next_version
+            )
+            .first()
         )
-        db.add(new_version)
-        db.commit()
-        db.refresh(new_version)
         
-        _finish_step(db, step, "success", f"Saved as v{next_version}")
-        return {
-            "success": True,
-            "version": base_version,
-            "sub_version": sub_version,
-            "version_number": next_version,
-            "message": f"Saved as v{next_version}",
-        }
+        if existing_version:
+            # Update existing version
+            existing_version.markdown = request.markdown
+            existing_version.feedback = {"parent_version": base_version, "edit_number": sub_version}
+            existing_version.regen_context = f"Manual edit of v{base_version} (updated)"
+            db.commit()
+            db.refresh(existing_version)
+            
+            _finish_step(db, step, "success", f"Updated v{next_version}")
+            return {
+                "success": True,
+                "version": base_version,
+                "sub_version": sub_version,
+                "version_number": next_version,
+                "message": f"Updated v{next_version}",
+            }
+        else:
+            # Create a new RunVersion entry for this sub-version
+            new_version = models.RunVersion(
+                run_id=run_id,
+                version_number=next_version,
+                markdown=request.markdown,
+                feedback={"parent_version": base_version, "edit_number": sub_version},
+                questions_for_expert=[],
+                questions_for_client=[],
+                graphic_path=None,
+                regen_context=f"Manual edit of v{base_version}",
+            )
+            db.add(new_version)
+            db.commit()
+            db.refresh(new_version)
+            
+            _finish_step(db, step, "success", f"Saved as v{next_version}")
+            return {
+                "success": True,
+                "version": base_version,
+                "sub_version": sub_version,
+                "version_number": next_version,
+                "message": f"Saved as v{next_version}",
+            }
     except Exception as exc:
         logger.exception(f"Failed to save markdown for run {run_id}")
         _finish_step(db, step, "failed", str(exc))
@@ -931,23 +958,48 @@ async def auto_save_subversion(
     next_version = round(next_version, 1)
 
     try:
-        new_version = models.RunVersion(
-            run_id=run_id,
-            version_number=next_version,
-            markdown=request.markdown,
-            feedback={"auto_save": True, "parent_major": current_major},
-            regen_context="Auto-saved after AI edit",
+        # Check if this version already exists (prevent duplicates)
+        existing_version = (
+            db.query(models.RunVersion)
+            .filter(
+                models.RunVersion.run_id == run_id,
+                models.RunVersion.version_number == next_version
+            )
+            .first()
         )
-        db.add(new_version)
-        db.commit()
-        db.refresh(new_version)
+        
+        if existing_version:
+            # Update existing version instead of creating duplicate
+            existing_version.markdown = request.markdown
+            existing_version.feedback = {"auto_save": True, "parent_major": current_major}
+            existing_version.regen_context = "Auto-saved after AI edit (updated)"
+            db.commit()
+            db.refresh(existing_version)
+            
+            return {
+                "success": True,
+                "version_number": next_version,
+                "is_subversion": True,
+                "message": f"Updated v{next_version}",
+            }
+        else:
+            new_version = models.RunVersion(
+                run_id=run_id,
+                version_number=next_version,
+                markdown=request.markdown,
+                feedback={"auto_save": True, "parent_major": current_major},
+                regen_context="Auto-saved after AI edit",
+            )
+            db.add(new_version)
+            db.commit()
+            db.refresh(new_version)
 
-        return {
-            "success": True,
-            "version_number": next_version,
-            "is_subversion": True,
-            "message": f"Auto-saved as v{next_version}",
-        }
+            return {
+                "success": True,
+                "version_number": next_version,
+                "is_subversion": True,
+                "message": f"Auto-saved as v{next_version}",
+            }
     except Exception as exc:
         logger.exception(f"Failed to auto-save for run {run_id}")
         raise HTTPException(
@@ -1092,6 +1144,8 @@ class IndexStatusResponse(BaseModel):
     """Response for indexing status."""
     is_indexed: bool = False
     indexed_chunks: int = 0
+    indexed_files: List[str] = Field(default_factory=list)
+    indexed_version: Optional[float] = None
 
 
 @run_router.get("/{run_id}/index-status", response_model=IndexStatusResponse)
@@ -1109,9 +1163,13 @@ async def get_index_status(
         from server.services.vector_store import VectorStore
         vector_store = VectorStore(engine)
         indexed_chunks = vector_store.count_run_embeddings(run_id)
+        indexed_files = vector_store.get_indexed_file_names(run_id)
+        indexed_version = vector_store.get_indexed_version(run_id)
         return IndexStatusResponse(
             is_indexed=indexed_chunks > 0,
             indexed_chunks=indexed_chunks,
+            indexed_files=indexed_files,
+            indexed_version=indexed_version,
         )
     except Exception as exc:
         logger.warning(f"Failed to get index status for run {run_id}: {exc}")
@@ -1183,13 +1241,10 @@ async def index_run_documents(
         # Chunk and embed the output document
         output_chunks = 0
         if document_content:
-            # Simple chunking by paragraphs (could be improved)
-            chunks = [c.strip() for c in document_content.split("\n\n") if c.strip()]
+            # Use proper chunking with size limits
+            chunks = _chunk_text(document_content)
             
             for i, chunk in enumerate(chunks):
-                if len(chunk) < 10:  # Skip very short chunks
-                    continue
-                    
                 # Get embedding
                 embedding = list(embedder.embed(chunk))
                 
@@ -1216,7 +1271,11 @@ async def index_run_documents(
         
         if input_file_ids:
             from server.core.ingest import DocumentIngester
+            from server.core.config import get_project_data_dir
             ingester = DocumentIngester()
+            
+            # Get project base directory for resolving relative paths
+            project_base_dir = get_project_data_dir(str(run.project_id))
             
             for file_id in input_file_ids:
                 try:
@@ -1226,7 +1285,9 @@ async def index_run_documents(
                         logger.warning(f"ProjectFile {file_id} not found or has no path")
                         continue
                     
-                    file_path = Path(project_file.path)
+                    # Resolve relative path to full path
+                    relative_path = project_file.path
+                    file_path = project_base_dir / relative_path
                     if not file_path.exists():
                         logger.warning(f"File path does not exist: {file_path}")
                         continue
@@ -1246,8 +1307,8 @@ async def index_run_documents(
                     if not text_content or len(text_content) < 10:
                         continue
                     
-                    # Chunk the content
-                    chunks = [c.strip() for c in text_content.split("\n\n") if c.strip() and len(c.strip()) > 10]
+                    # Use proper chunking with size limits
+                    chunks = _chunk_text(text_content)
                     
                     for i, chunk in enumerate(chunks):
                         embedding = list(embedder.embed(chunk))
@@ -1290,6 +1351,270 @@ async def index_run_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to index documents: {exc}"
         )
+
+
+def _chunk_text(text: str, max_chars: int = 1500, overlap: int = 100) -> List[str]:
+    """
+    Split text into chunks with size limits to avoid exceeding embedding model token limits.
+    Uses paragraph boundaries when possible, falls back to sentence/word boundaries.
+    Max ~1500 chars ≈ 375 tokens, well under 8192 limit.
+    """
+    if not text or len(text) < 10:
+        return []
+    
+    chunks = []
+    
+    # First, split by double newlines (paragraphs)
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    
+    current_chunk = ""
+    for para in paragraphs:
+        # If single paragraph is too long, split it further
+        if len(para) > max_chars:
+            # Flush current chunk first
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            
+            # Split long paragraph by sentences or fixed size
+            words = para.split()
+            temp_chunk = ""
+            for word in words:
+                if len(temp_chunk) + len(word) + 1 > max_chars:
+                    if temp_chunk:
+                        chunks.append(temp_chunk.strip())
+                    temp_chunk = word
+                else:
+                    temp_chunk = temp_chunk + " " + word if temp_chunk else word
+            if temp_chunk:
+                chunks.append(temp_chunk.strip())
+        elif len(current_chunk) + len(para) + 2 > max_chars:
+            # Current chunk would exceed limit, save it and start new
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = para
+        else:
+            # Add to current chunk
+            current_chunk = current_chunk + "\n\n" + para if current_chunk else para
+    
+    # Don't forget the last chunk
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    # Filter out very short chunks
+    return [c for c in chunks if len(c) >= 20]
+
+
+@run_router.post("/{run_id}/index-documents-stream")
+async def index_run_documents_stream(
+    run_id: UUID,
+    request: IndexDocumentsRequest,
+    db: Session = Depends(db_session),
+):
+    """
+    Stream progress while indexing documents for semantic search.
+    Uses batched embedding calls for speed.
+    Sends SSE events with progress updates.
+    """
+    from server.db.session import engine
+    from server.services.vector_store import VectorStore
+    from server.core.history_profiles import ProfileEmbedder
+    from server.core.config import HISTORY_EMBEDDING_MODEL, get_project_data_dir
+    
+    run = db.get(models.Run, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    version_number = request.version
+    BATCH_SIZE = 20  # Embed 20 chunks at a time for speed
+    
+    async def generate_progress():
+        try:
+            vector_store = VectorStore(engine)
+            embedder = ProfileEmbedder(HISTORY_EMBEDDING_MODEL)
+            
+            # Send initial status
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Starting indexing...'})}\n\n"
+            
+            # Clear existing embeddings
+            deleted = await run_in_threadpool(vector_store.delete_run_embeddings, run_id)
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Cleared {deleted} old embeddings'})}\n\n"
+            
+            # Get document content
+            nonlocal version_number
+            document_content = ""
+            
+            if version_number:
+                version = (
+                    db.query(models.RunVersion)
+                    .filter(
+                        models.RunVersion.run_id == run_id,
+                        models.RunVersion.version_number == version_number
+                    )
+                    .first()
+                )
+                if version and version.markdown:
+                    document_content = version.markdown
+            
+            if not document_content:
+                artifact = (
+                    db.query(models.Artifact)
+                    .filter(
+                        models.Artifact.run_id == run_id,
+                        models.Artifact.kind == "rendered_doc"
+                    )
+                    .first()
+                )
+                if artifact and artifact.path:
+                    artifact_path = Path(artifact.path)
+                    if artifact_path.exists():
+                        document_content = artifact_path.read_text()
+                        version_number = 1.0
+            
+            # Chunk output document with size limits
+            output_chunk_list = _chunk_text(document_content) if document_content else []
+            
+            # Get input files
+            input_file_ids = run.included_file_ids or []
+            input_files_data = []
+            
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Processing {len(input_file_ids)} input files...'})}\n\n"
+            
+            if input_file_ids:
+                from server.core.ingest import DocumentIngester
+                ingester = DocumentIngester()
+                project_base_dir = get_project_data_dir(str(run.project_id))
+                
+                for file_id in input_file_ids:
+                    try:
+                        project_file = db.get(models.ProjectFile, file_id)
+                        if not project_file or not project_file.path:
+                            logger.warning(f"ProjectFile {file_id} not found or has no path")
+                            continue
+                        
+                        file_path = project_base_dir / project_file.path
+                        if not file_path.exists():
+                            logger.warning(f"File path does not exist: {file_path}")
+                            continue
+                        
+                        doc_data = await run_in_threadpool(ingester.ingest_file, file_path)
+                        if not doc_data:
+                            logger.warning(f"Could not ingest file: {file_path}")
+                            continue
+                        
+                        if isinstance(doc_data, list):
+                            text_content = "\n\n".join(d.get("content", "") for d in doc_data if d.get("content"))
+                        else:
+                            text_content = doc_data.get("content", "")
+                        
+                        if text_content and len(text_content) >= 10:
+                            # Use proper chunking with size limits
+                            chunks = _chunk_text(text_content)
+                            if chunks:
+                                input_files_data.append({
+                                    "file_id": file_id,
+                                    "filename": project_file.filename,
+                                    "chunks": chunks,
+                                })
+                                logger.info(f"Prepared {len(chunks)} chunks from {project_file.filename}")
+                    except Exception as e:
+                        logger.exception(f"Failed to process input file {file_id}: {e}")
+                        continue
+            
+            total_input_chunks = sum(len(f["chunks"]) for f in input_files_data)
+            total_chunks = len(output_chunk_list) + total_input_chunks
+            
+            if total_chunks == 0:
+                yield f"data: {json.dumps({'type': 'complete', 'indexed_chunks': 0, 'output_chunks': 0, 'input_chunks': 0, 'message': 'No content to index'})}\n\n"
+                return
+            
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Indexing {total_chunks} chunks ({len(output_chunk_list)} output, {total_input_chunks} input from {len(input_files_data)} files)'})}\n\n"
+            
+            indexed_count = 0
+            output_chunks = 0
+            input_chunks = 0
+            
+            # Batch embed and store output chunks
+            for batch_start in range(0, len(output_chunk_list), BATCH_SIZE):
+                batch = output_chunk_list[batch_start:batch_start + BATCH_SIZE]
+                
+                # Batch embed
+                embeddings = await run_in_threadpool(lambda b=batch: [list(embedder.embed(c)) for c in b])
+                
+                # Store all embeddings in batch
+                for i, (chunk, embedding) in enumerate(zip(batch, embeddings)):
+                    chunk_idx = batch_start + i
+                    await run_in_threadpool(
+                        lambda emb=embedding, idx=chunk_idx, chk=chunk: vector_store.upsert_run_embedding(
+                            embedding=emb,
+                            project_id=run.project_id,
+                            run_id=run_id,
+                            version_number=version_number or 1.0,
+                            doc_kind="document_chunk",
+                            chunk_index=idx,
+                            chunk_text=chk,
+                            metadata={"doc_type": "output", "file_name": "scope_document"}
+                        )
+                    )
+                    indexed_count += 1
+                    output_chunks += 1
+                
+                # Send progress after each batch
+                progress = int((indexed_count / total_chunks) * 100) if total_chunks > 0 else 100
+                yield f"data: {json.dumps({'type': 'progress', 'current': indexed_count, 'total': total_chunks, 'percent': progress, 'phase': 'output'})}\n\n"
+            
+            # Batch embed and store input file chunks
+            for file_data in input_files_data:
+                file_chunks = file_data["chunks"]
+                
+                for batch_start in range(0, len(file_chunks), BATCH_SIZE):
+                    batch = file_chunks[batch_start:batch_start + BATCH_SIZE]
+                    
+                    # Batch embed
+                    embeddings = await run_in_threadpool(lambda b=batch: [list(embedder.embed(c)) for c in b])
+                    
+                    # Store all embeddings in batch
+                    for i, (chunk, embedding) in enumerate(zip(batch, embeddings)):
+                        chunk_idx = batch_start + i
+                        await run_in_threadpool(
+                            lambda emb=embedding, idx=chunk_idx, chk=chunk, fd=file_data: vector_store.upsert_run_embedding(
+                                embedding=emb,
+                                project_id=run.project_id,
+                                run_id=run_id,
+                                version_number=None,
+                                doc_kind="input_chunk",
+                                chunk_index=idx,
+                                chunk_text=chk,
+                                metadata={"doc_type": "input", "file_name": fd["filename"], "file_id": str(fd["file_id"])}
+                            )
+                        )
+                        indexed_count += 1
+                        input_chunks += 1
+                    
+                    # Send progress after each batch
+                    progress = int((indexed_count / total_chunks) * 100) if total_chunks > 0 else 100
+                    yield f"data: {json.dumps({'type': 'progress', 'current': indexed_count, 'total': total_chunks, 'percent': progress, 'phase': 'input', 'file': file_data['filename']})}\n\n"
+            
+            # Collect indexed file names
+            indexed_file_names = [f["filename"] for f in input_files_data]
+            
+            logger.info(f"Indexed {output_chunks} output chunks and {input_chunks} input chunks for run {run_id}")
+            
+            yield f"data: {json.dumps({'type': 'complete', 'indexed_chunks': indexed_count, 'output_chunks': output_chunks, 'input_chunks': input_chunks, 'indexed_files': indexed_file_names, 'message': f'Indexed {indexed_count} chunks ({output_chunks} output, {input_chunks} input)'})}\n\n"
+            
+        except Exception as exc:
+            logger.exception(f"Failed to index documents for run {run_id}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+    
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 class SaveQuestionsStateRequest(BaseModel):

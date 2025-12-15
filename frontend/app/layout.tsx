@@ -8,7 +8,11 @@ import { SidebarLayout } from "@/components/layout/SidebarLayout";
 
 export const metadata: Metadata = {
   title: "ScopeGen",
-  description: "AI-powered scope document generation platform"
+  description: "AI-powered scope document generation platform",
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/logo.png",
+  },
 };
 
 export default async function RootLayout({

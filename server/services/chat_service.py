@@ -172,6 +172,28 @@ DOCUMENT_TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "list_input_files",
+        "description": "List all available input files for this run. Use this first to see what files are available before reading them. Returns file names that can be used with read_input_file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "read_input_file",
+        "description": "Read the entire contents of an input file. Use this when you need to see the full text of a specific file (like a transcript, document, or spreadsheet) rather than just search results. Useful when you need complete context from a source file. Use list_input_files first if you're unsure of exact file names.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "The name of the input file to read. Partial matches work (e.g., 'fresco' will match 'Fresco call.transcript.vtt')",
+                },
+            },
+            "required": ["filename"],
+        },
+    },
 ]
 
 
@@ -601,6 +623,115 @@ Be concise and helpful. Focus on improving the document quality."""
             except Exception as exc:
                 logger.exception(f"Workspace search failed: {exc}")
                 return f"Search failed: {str(exc)}"
+        
+        elif tool_name == "list_input_files":
+            if not run_id:
+                return "File list not available - no run context"
+            
+            try:
+                from uuid import UUID
+                from server.db.session import get_session
+                from server.db import models
+                
+                with get_session() as db:
+                    run = db.get(models.Run, UUID(run_id) if isinstance(run_id, str) else run_id)
+                    if not run:
+                        return "Run not found"
+                    
+                    input_file_ids = run.included_file_ids or []
+                    if not input_file_ids:
+                        return "No input files available for this run"
+                    
+                    files = []
+                    for file_id in input_file_ids:
+                        pf = db.get(models.ProjectFile, file_id)
+                        if pf:
+                            files.append(pf.filename)
+                    
+                    if not files:
+                        return "No input files found"
+                    
+                    return f"Available input files ({len(files)}):\n" + "\n".join(f"• {f}" for f in files)
+                    
+            except Exception as exc:
+                logger.exception(f"List input files failed: {exc}")
+                return f"Failed to list files: {str(exc)}"
+        
+        elif tool_name == "read_input_file":
+            if not run_id:
+                return "File read not available - no run context"
+            
+            filename = tool_input.get("filename", "")
+            if not filename:
+                return "Filename is required"
+            
+            try:
+                from uuid import UUID
+                from sqlalchemy.orm import Session
+                from server.db.session import get_session
+                from server.db import models
+                from server.core.config import get_project_data_dir
+                from server.core.ingest import DocumentIngester
+                from pathlib import Path
+                
+                with get_session() as db:
+                    # Get the run
+                    run = db.get(models.Run, UUID(run_id) if isinstance(run_id, str) else run_id)
+                    if not run:
+                        return f"Run not found"
+                    
+                    # Find the file by name
+                    input_file_ids = run.included_file_ids or []
+                    if not input_file_ids:
+                        return "No input files available for this run"
+                    
+                    project_file = None
+                    for file_id in input_file_ids:
+                        pf = db.get(models.ProjectFile, file_id)
+                        if pf and (pf.filename.lower() == filename.lower() or filename.lower() in pf.filename.lower()):
+                            project_file = pf
+                            break
+                    
+                    if not project_file:
+                        # List available files
+                        available = []
+                        for file_id in input_file_ids:
+                            pf = db.get(models.ProjectFile, file_id)
+                            if pf:
+                                available.append(pf.filename)
+                        return f"File '{filename}' not found. Available files: {', '.join(available)}"
+                    
+                    # Get full path and read content
+                    project_base_dir = get_project_data_dir(str(run.project_id))
+                    file_path = project_base_dir / project_file.path
+                    
+                    if not file_path.exists():
+                        return f"File not found on disk: {project_file.filename}"
+                    
+                    # Use DocumentIngester to extract text
+                    ingester = DocumentIngester()
+                    doc_data = ingester.ingest_file(file_path)
+                    
+                    if not doc_data:
+                        return f"Could not read file: {project_file.filename}"
+                    
+                    if isinstance(doc_data, list):
+                        text_content = "\n\n".join(d.get("content", "") for d in doc_data if d.get("content"))
+                    else:
+                        text_content = doc_data.get("content", "")
+                    
+                    if not text_content:
+                        return f"File is empty: {project_file.filename}"
+                    
+                    # Truncate if extremely long (>50k chars)
+                    if len(text_content) > 50000:
+                        text_content = text_content[:50000] + "\n\n[... content truncated (50,000 chars shown) ...]"
+                    
+                    return f"=== {project_file.filename} ===\n\n{text_content}"
+                    
+            except Exception as exc:
+                logger.exception(f"Read input file failed: {exc}")
+                return f"Failed to read file: {str(exc)}"
         
         else:
             return f"Unknown tool: {tool_name}"
